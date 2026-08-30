@@ -612,9 +612,12 @@ def recover_account(name: str) -> str:
 
 def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool:
     combined = f"{result.stdout}\n{result.stderr}".lower()
-    if result.returncode == 0:
+    if any(fragment in combined for fragment in ok_fragments):
         return True
-    return any(fragment in combined for fragment in ok_fragments)
+    # Some Kanidm CLI commands historically return exit code 0 even when the
+    # operation failed. Treat logged errors as failures too.
+    has_logged_error = bool(re.search(r"(?m)\bERROR\b", f"{result.stdout}\n{result.stderr}"))
+    return result.returncode == 0 and not has_logged_error
 
 
 def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
@@ -624,7 +627,7 @@ def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
 def ensure_idm_admin_login(password: str) -> str:
     """Login with the configured secret, recovering only on a fresh/stale account."""
     login = login_idm_admin(password)
-    if login.returncode == 0:
+    if cli_ok(login):
         return password
     try:
         generated_password = recover_account("idm_admin")
@@ -638,7 +641,7 @@ def ensure_idm_admin_login(password: str) -> str:
     SECRETS_PATH.chmod(0o600)
 
     retry = login_idm_admin(generated_password)
-    if retry.returncode == 0:
+    if cli_ok(retry):
         print("Updated IDM_ADMIN_PASSWORD in secrets.yaml after Kanidm recovery.")
         return generated_password
     print(
@@ -663,10 +666,10 @@ def create_enrollment_link(username: str, domain: str) -> str:
         "--ttl",
         "86400",
     )
-    if result.returncode != 0:
+    if not cli_ok(result):
         # Kanidm 1.7 accepted TTL as a positional argument.
         result = kanidm_cli("person", "credential", "create-reset-token", username, "86400")
-    if result.returncode != 0:
+    if not cli_ok(result):
         print(
             f"Warning: could not create enrollment link for {username!r}: "
             f"{(result.stderr or result.stdout or '').strip()[:300]}",
@@ -719,9 +722,14 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
     secrets["IDM_ADMIN_PASSWORD"] = idm_admin_password
 
     for group in configured_groups(config):
-        created = kanidm_cli("group", "create", group)
-        if not cli_ok(created, "already exists", "duplicate"):
-            print(f"Warning: could not create group {group!r}: {(created.stderr or created.stdout or '')[:200]}", file=sys.stderr)
+        existing_group = kanidm_cli("group", "get", group, "--name", "idm_admin")
+        if not cli_ok(existing_group):
+            created = kanidm_cli("group", "create", group, "--name", "idm_admin")
+            if not cli_ok(created, "already exists", "duplicate", "attributeuniqueness"):
+                raise RuntimeError(
+                    f"Could not create group {group!r}: "
+                    f"{(created.stderr or created.stdout or '').strip()[:500]}"
+                )
 
     enrollment_links: dict[str, str] = {}
     credentialed: set[str] = set()
@@ -739,18 +747,31 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
                 "Use the enrollment link printed below.",
                 file=sys.stderr,
             )
-        created = kanidm_cli("person", "create", username, display)
-        if not cli_ok(created, "already exists", "duplicate"):
-            print(f"Warning: could not create person {username!r}: {(created.stderr or created.stdout or '')[:200]}", file=sys.stderr)
+        existing_person = kanidm_cli("person", "get", username, "--name", "idm_admin")
+        if not cli_ok(existing_person):
+            created = kanidm_cli(
+                "person", "create", username, display, "--name", "idm_admin"
+            )
+            if not cli_ok(created, "already exists", "duplicate", "attributeuniqueness"):
+                raise RuntimeError(
+                    f"Could not create person {username!r}: "
+                    f"{(created.stderr or created.stdout or '').strip()[:500]}"
+                )
         if email:
-            kanidm_cli("person", "update", username, "--mail", email)
-        kanidm_cli("person", "posix", "set", username)
+            kanidm_cli(
+                "person", "update", username, "--mail", email,
+                "--name", "idm_admin",
+            )
+        kanidm_cli("person", "posix", "set", username, "--name", "idm_admin")
         for group in user.get("groups") or []:
             name = str(group or "").strip()
             if name:
-                kanidm_cli("group", "add-members", name, username)
+                kanidm_cli(
+                    "group", "add-members", name, username,
+                    "--name", "idm_admin",
+                )
         status = credential_status(username)
-        if status.returncode != 0 or "no credentials" in f"{status.stdout}\n{status.stderr}".lower():
+        if not cli_ok(status) or "no credentials" in f"{status.stdout}\n{status.stderr}".lower():
             link = create_enrollment_link(username, str(config["kanidm"]["domain"]))
             if link:
                 enrollment_links[username] = link
@@ -777,20 +798,40 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
 def ensure_ldap_token(secrets: dict) -> None:
     if str(secrets.get("LDAP_TOKEN") or "").strip() and str(secrets.get("LDAP_TOKEN_CREATED") or ""):
         return
-    account = kanidm_cli("service-account", "create", "stalwart-ldap", "Stalwart LDAP")
-    if not cli_ok(account, "already exists", "duplicate"):
-        print(
-            f"Warning: could not create stalwart-ldap service account: {(account.stderr or account.stdout or '')[:200]}",
-            file=sys.stderr,
+    existing = kanidm_cli(
+        "service-account", "get", "stalwart-ldap", "--name", "idm_admin"
+    )
+    if not cli_ok(existing):
+        account = kanidm_cli(
+            "service-account",
+            "create",
+            "stalwart-ldap",
+            "Stalwart LDAP",
+            "idm_admin",
+            "--name",
+            "idm_admin",
         )
-    token = kanidm_cli("service-account", "api-token", "generate", "stalwart-ldap", "stalwart")
-    if token.returncode == 0:
-        value = (token.stdout or "").strip().splitlines()
-        secret = next((line.strip() for line in reversed(value) if line.strip() and " " not in line.strip()), "")
-        if secret:
-            secrets["LDAP_TOKEN"] = secret
-            secrets["LDAP_TOKEN_CREATED"] = "1"
-            save_yaml(SECRETS_PATH, secrets)
+        if not cli_ok(account, "already exists", "duplicate", "attributeuniqueness"):
+            raise RuntimeError(
+                "Could not create stalwart-ldap service account: "
+                f"{(account.stderr or account.stdout or '').strip()[:500]}"
+            )
+    token = kanidm_cli(
+        "service-account", "api-token", "generate",
+        "stalwart-ldap", "stalwart", "--name", "idm_admin",
+    )
+    if not cli_ok(token):
+        raise RuntimeError(
+            "Could not generate stalwart-ldap API token: "
+            f"{(token.stderr or token.stdout or '').strip()[:500]}"
+        )
+    value = (token.stdout or "").strip().splitlines()
+    secret = next((line.strip() for line in reversed(value) if line.strip() and " " not in line.strip()), "")
+    if not secret:
+        raise RuntimeError("Kanidm generated an LDAP API token but its value could not be parsed")
+    secrets["LDAP_TOKEN"] = secret
+    secrets["LDAP_TOKEN_CREATED"] = "1"
+    save_yaml(SECRETS_PATH, secrets)
 
 
 def apply_oauth2_clients(config: dict, secrets: dict) -> None:
@@ -820,7 +861,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
             continue
         public = to_bool(client.get("public"))
         existing = kanidm_cli("system", "oauth2", "get", client_id, "--name", "idm_admin")
-        if existing.returncode != 0:
+        if not cli_ok(existing):
             if public:
                 created = kanidm_cli(
                     "system", "oauth2", "create-public", client_id, name, landing,
@@ -831,7 +872,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                     "system", "oauth2", "create", client_id, name, landing,
                     "--name", "idm_admin",
                 )
-            if created.returncode != 0:
+            if not cli_ok(created):
                 raise RuntimeError(
                     f"Could not create OAuth2 client {client_id!r}: "
                     f"{(created.stderr or created.stdout or '').strip()[:500]}"
@@ -857,7 +898,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 "system", "oauth2", "update-scope-map", client_id,
                 "idm_all_persons", *scopes, "--name", "idm_admin",
             )
-            if result.returncode != 0:
+            if not cli_ok(result):
                 raise RuntimeError(
                     f"Could not configure scopes for OAuth2 client {client_id!r}: "
                     f"{(result.stderr or result.stdout or '').strip()[:500]}"
@@ -885,7 +926,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
         verified = kanidm_cli(
             "system", "oauth2", "get", client_id, "--name", "idm_admin"
         )
-        if verified.returncode != 0:
+        if not cli_ok(verified):
             raise RuntimeError(
                 f"OAuth2 client {client_id!r} could not be verified after apply: "
                 f"{(verified.stderr or verified.stdout or '').strip()[:500]}"

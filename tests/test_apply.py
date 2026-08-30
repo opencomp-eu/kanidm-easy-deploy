@@ -12,6 +12,7 @@ from scripts.apply import (
     COMPOSE_PROJECT_NAME,
     build_client_toml,
     build_server_toml,
+    cli_ok,
     configured_groups,
     create_enrollment_link,
     derive_compose_files,
@@ -157,6 +158,26 @@ def test_caddy_block_proxies_https_to_kanidm():
 def test_render_template_requires_placeholders():
     with pytest.raises(ValueError, match="Unresolved"):
         render_template("{{MISSING}}", {})
+
+
+def test_cli_ok_rejects_logged_error_with_zero_exit_code():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr="2026-08-30 ERROR kanidm_cli: Item not found",
+    )
+    assert not cli_ok(result)
+
+
+def test_cli_ok_accepts_expected_idempotency_error():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr="ERROR kanidm_cli: AttributeUniqueness",
+    )
+    assert cli_ok(result, "attributeuniqueness")
 
 
 def test_validate_config_rejects_reserved_person_name():
