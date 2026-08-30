@@ -255,7 +255,7 @@ def build_server_toml(config: dict) -> str:
         'tls_key = "/data/key.pem"',
         f'domain = "{domain}"',
         f'origin = "{origin}"',
-        "trust_x_forward_for = true",
+        "trust_x_forward_for = false",
         'log_level = "info"',
     ]
     if ldap_bind:
@@ -314,7 +314,9 @@ def kanidm_portal_caddy_block(domain: str) -> str:
         header_up Host {{host}}
         header_up X-Forwarded-Host {{host}}
         header_up X-Forwarded-Proto {{scheme}}
-        header_up X-Forwarded-For {{remote_ip}}
+        # Kanidm 1.7.x rejects malformed X-Forwarded-For; use the proxy TCP
+        # address instead (trust_x_forward_for = false in server.toml).
+        header_up -X-Forwarded-For
     }}
     encode gzip
     log
@@ -511,9 +513,26 @@ def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool
 
 def bootstrap_identity(config: dict, secrets: dict) -> None:
     """Create the first person, groups, OIDC clients, and LDAP token."""
-    print("Bootstrapping Kanidm identity (admin, groups, OIDC, LDAP)…")
-    recover_account("idm_admin", secrets["IDM_ADMIN_PASSWORD"])
-    recover_account("admin", secrets["ADMIN_PASSWORD"])
+    print("Bootstrapping Kanidm identity (idm_admin, groups, OIDC, LDAP)…")
+    try:
+        recover_account("idm_admin", secrets["IDM_ADMIN_PASSWORD"])
+    except RuntimeError as exc:
+        print(f"Warning: could not recover idm_admin: {exc}", file=sys.stderr)
+        print(
+            "Recover manually: docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml",
+            file=sys.stderr,
+        )
+        return
+
+    # Optional: Kanidm server-config service account (not the person in deploy.yaml).
+    try:
+        recover_account("admin", secrets["ADMIN_PASSWORD"])
+    except RuntimeError:
+        print(
+            "Warning: recover-account for service account 'admin' failed (optional). "
+            "Use idm_admin for the web UI and person accounts for apps.",
+            file=sys.stderr,
+        )
 
     login = kanidm_cli("login", "--name", "idm_admin", input_text=secrets["IDM_ADMIN_PASSWORD"] + "\n")
     if login.returncode != 0:
@@ -709,11 +728,15 @@ def print_summary(config: dict, secrets: dict) -> None:
     print(f"LDAP:            ldaps://kanidm:3636  base {ldap_base_dn(domain)}")
     print(f"Data directory:  {kanidm['data_dir']}")
     print(f"Secrets file:    {SECRETS_PATH}")
-    print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}")
+    print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}  (web UI / CLI admin)")
     admin = (config.get("users") or [{}])[0]
     username = admin.get("username", "admin")
     if not str(admin.get("password") or "").strip():
-        print(f"Person password: {secrets.get('ADMIN_PASSWORD')} ({username}; stored in secrets.yaml)")
+        print(
+            f"Person account:  {username} / {secrets.get('ADMIN_PASSWORD')} "
+            f"(for OpenCloud/Matrix/Stalwart; created on bootstrap)"
+        )
+    print("  Sign in at the portal with idm_admin, not the person username, until bootstrap completes.")
     clients = oidc_clients(config)
     if clients:
         print(f"OIDC clients:    {', '.join(str(item.get('client_id')) for item in clients if isinstance(item, dict))}")
