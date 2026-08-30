@@ -142,6 +142,26 @@ def test_render_template_requires_placeholders():
         render_template("{{MISSING}}", {})
 
 
+def test_kanidm_cli_places_config_before_subcommand(monkeypatch):
+    from scripts import apply as apply_module
+
+    captured: dict[str, list] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(apply_module, "load_config", lambda: _base_config(kanidm={"data_dir": "/var/lib/kanidm"}))
+    apply_module.kanidm_cli("login", "--name", "idm_admin")
+    idx = captured["cmd"].index("-c")
+    login_idx = captured["cmd"].index("login")
+    assert idx < login_idx
+    assert captured["cmd"][idx + 1] == "/data/client.toml"
+    vol_idx = captured["cmd"].index("-v")
+    assert captured["cmd"][vol_idx + 1] == "/var/lib/kanidm:/data"
+
+
 def test_recover_account_retries_with_disable(monkeypatch):
     from scripts import apply as apply_module
 

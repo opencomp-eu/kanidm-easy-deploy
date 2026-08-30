@@ -68,6 +68,7 @@ Kanidm OIDC issuers are **per client**. OpenCloud uses `/oauth2/openid/opencloud
 ```bash
 bash apply.sh              # re-render config and reconcile stack
 bash apply.sh --skip-runtime   # render only, no docker
+bash kanidm-cli.sh login --name idm_admin   # CLI admin (after apply)
 bash start.sh              # compose up (via apply, skip pull)
 bash stop.sh               # compose down
 ```

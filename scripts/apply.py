@@ -439,12 +439,12 @@ def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.Complete
         "--network",
         "kanidm-net",
         "-v",
-        f"{kanidm['data_dir']}/client.toml:/data/client.toml:ro",
+        f"{kanidm['data_dir']}:/data",
         tools,
         "kanidm",
-        *args,
         "-c",
         "/data/client.toml",
+        *args,
     ]
     return subprocess.run(
         cmd,
@@ -761,7 +761,7 @@ def print_summary(config: dict, secrets: dict) -> None:
         print("Proxy mode:      standalone (local kanidm_caddy on :443)")
     print()
     print("Kanidm is the source of truth for users, groups, and authentication.")
-    print("Create further people with: docker compose --profile cli run --rm kanidm-cli person create …")
+    print("Create further people with: bash kanidm-cli.sh person create … --name idm_admin")
     print()
 
 
