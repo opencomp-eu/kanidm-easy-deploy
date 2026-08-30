@@ -29,7 +29,9 @@ from scripts.apply import (
     ldap_base_dn,
     merge_oidc_clients,
     oidc_clients,
+    org_mail_domain,
     parse_api_token,
+    person_mail_address,
     render_template,
     validate_config,
 )
@@ -83,6 +85,19 @@ def test_kanidm_issuer_is_per_client():
 def test_ldap_base_dn_from_domain():
     assert ldap_base_dn("idm.example.com") == "dc=idm,dc=example,dc=com"
     assert ldap_base_dn("auth.opencomp.eu") == "dc=auth,dc=opencomp,dc=eu"
+
+
+def test_org_mail_domain_strips_identity_host():
+    assert org_mail_domain("auth.opencomp.eu") == "opencomp.eu"
+    assert org_mail_domain("idm.example.com") == "example.com"
+    assert org_mail_domain("opencomp.eu") == "opencomp.eu"
+
+
+def test_person_mail_defaults_to_org_domain():
+    assert person_mail_address("thomas", "", "auth.opencomp.eu") == "thomas@opencomp.eu"
+    assert person_mail_address("thomas", "thomas@other.example", "auth.opencomp.eu") == (
+        "thomas@other.example"
+    )
 
 
 def test_build_server_toml_includes_ldap_and_origin():

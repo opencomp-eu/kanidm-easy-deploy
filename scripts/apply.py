@@ -50,7 +50,7 @@ DEFAULT_GROUPS = (
     "mail-users",
 )
 
-DEFAULT_OIDC_SCOPES = ["openid", "profile", "email", "groups_name"]
+DEFAULT_OIDC_SCOPES = ["openid", "profile", "email", "groups", "groups_name"]
 DEFAULT_OPENCLOUD_CLAIM_MAPS = [
     {
         "claim": "opencloudRoles",
@@ -160,6 +160,31 @@ def ldap_base_dn(domain: str) -> str:
     if not labels:
         raise ValueError("cannot derive LDAP base DN from an empty domain")
     return ",".join(f"dc={label}" for label in labels)
+
+
+IDENTITY_HOST_LABELS = frozenset({"auth", "idm", "sso", "kanidm", "login", "accounts"})
+
+
+def org_mail_domain(kanidm_domain: str) -> str:
+    """Organisation mail domain: auth.opencomp.eu → opencomp.eu."""
+    labels = [part for part in str(kanidm_domain).strip().lower().split(".") if part]
+    if len(labels) >= 3 and labels[0] in IDENTITY_HOST_LABELS:
+        return ".".join(labels[1:])
+    sibling = PROJECT_ROOT.parent / "stalwart-easy-deploy" / "deploy.yaml"
+    if sibling.is_file():
+        try:
+            domain = str((load_yaml(sibling).get("stalwart") or {}).get("domain") or "").strip()
+        except ValueError:
+            domain = ""
+        if domain and domain not in {"example.com"}:
+            return domain.lower()
+    return str(kanidm_domain).strip().lower()
+
+
+def person_mail_address(username: str, email: str, kanidm_domain: str) -> str:
+    if email.strip():
+        return email.strip()
+    return f"{username}@{org_mail_domain(kanidm_domain)}"
 
 
 def load_engine_oidc_clients() -> list[Any]:
@@ -829,7 +854,11 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
         if not username:
             continue
         display = str(user.get("display_name") or username)
-        email = str(user.get("email") or "")
+        email = person_mail_address(
+            username,
+            str(user.get("email") or ""),
+            str(config["kanidm"]["domain"]),
+        )
         if str(user.get("password") or "").strip():
             print(
                 f"Note: users[{username!r}].password is not applied to web login. "
