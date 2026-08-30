@@ -255,11 +255,8 @@ def build_server_toml(config: dict) -> str:
         'tls_key = "/data/key.pem"',
         f'domain = "{domain}"',
         f'origin = "{origin}"',
+        "trust_x_forward_for = true",
         'log_level = "info"',
-        "",
-        "# Caddy (easydeploy-net) and other Docker bridges send X-Forwarded-For.",
-        "[http_client_address_info]",
-        'x-forward-for = ["127.0.0.0/8", "172.16.0.0/12"]',
     ]
     if ldap_bind:
         lines.append(f'ldapbindaddress = "{ldap_bind}"')
