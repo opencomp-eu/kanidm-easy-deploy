@@ -620,6 +620,22 @@ def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool
     return result.returncode == 0 and not has_logged_error
 
 
+def cli_json_field(result: subprocess.CompletedProcess[str], *fields: str) -> str:
+    """Extract a string field from Kanidm JSON output."""
+    for line in (result.stdout or "").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        for field in fields:
+            field_value = value.get(field)
+            if isinstance(field_value, str) and field_value.strip():
+                return field_value.strip()
+    return ""
+
+
 def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
     return kanidm_cli("login", "--name", "idm_admin", password=password)
 
@@ -817,7 +833,7 @@ def ensure_ldap_token(secrets: dict) -> None:
                 f"{(account.stderr or account.stdout or '').strip()[:500]}"
             )
     token = kanidm_cli(
-        "service-account", "api-token", "generate",
+        "-o", "json", "service-account", "api-token", "generate",
         "stalwart-ldap", "stalwart", "--name", "idm_admin",
     )
     if not cli_ok(token):
@@ -825,8 +841,20 @@ def ensure_ldap_token(secrets: dict) -> None:
             "Could not generate stalwart-ldap API token: "
             f"{(token.stderr or token.stdout or '').strip()[:500]}"
         )
-    value = (token.stdout or "").strip().splitlines()
-    secret = next((line.strip() for line in reversed(value) if line.strip() and " " not in line.strip()), "")
+    secret = cli_json_field(token, "result", "token", "secret")
+    if not secret:
+        # Compatibility with older Kanidm text output.
+        value = (token.stdout or "").strip().splitlines()
+        secret = next(
+            (
+                line.strip()
+                for line in reversed(value)
+                if line.strip()
+                and " " not in line.strip()
+                and not line.strip().startswith(("{", "}"))
+            ),
+            "",
+        )
     if not secret:
         raise RuntimeError("Kanidm generated an LDAP API token but its value could not be parsed")
     secrets["LDAP_TOKEN"] = secret
@@ -914,11 +942,13 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
             kanidm_cli("system", "oauth2", "warning-insecure-client-disable-pkce", client_id)
         if not public:
             shown = kanidm_cli(
-                "system", "oauth2", "show-basic-secret", client_id,
+                "-o", "json", "system", "oauth2", "show-basic-secret", client_id,
                 "--name", "idm_admin",
             )
-            secret = (shown.stdout or "").strip().splitlines()
-            value = next((line.strip() for line in reversed(secret) if line.strip() and not line.lower().startswith("name")), "")
+            value = cli_json_field(shown, "secret", "result")
+            if not value:
+                secret = (shown.stdout or "").strip().splitlines()
+                value = next((line.strip() for line in reversed(secret) if line.strip() and not line.lower().startswith("name")), "")
             if value:
                 secrets[f"OIDC_SECRET_{client_id.upper()}"] = value
                 save_yaml(SECRETS_PATH, secrets)

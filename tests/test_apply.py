@@ -12,6 +12,7 @@ from scripts.apply import (
     COMPOSE_PROJECT_NAME,
     build_client_toml,
     build_server_toml,
+    cli_json_field,
     cli_ok,
     configured_groups,
     create_enrollment_link,
@@ -178,6 +179,26 @@ def test_cli_ok_accepts_expected_idempotency_error():
         stderr="ERROR kanidm_cli: AttributeUniqueness",
     )
     assert cli_ok(result, "attributeuniqueness")
+
+
+def test_cli_json_field_parses_api_token_result():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{"status":"Success","result":"token-value"}\n',
+        stderr="WARN verify_ca set to false",
+    )
+    assert cli_json_field(result, "result", "token") == "token-value"
+
+
+def test_cli_json_field_parses_oauth_secret():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{"secret":"client-secret"}\n',
+        stderr="",
+    )
+    assert cli_json_field(result, "secret", "result") == "client-secret"
 
 
 def test_validate_config_rejects_reserved_person_name():
