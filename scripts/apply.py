@@ -1091,6 +1091,32 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 f"{(verified.stderr or verified.stdout or '').strip()[:500]}"
             )
         print(f"  OIDC client ready: {client_id} → {landing}")
+    remove_stale_oauth2_clients({str(item.get("client_id") or "").strip() for item in clients if isinstance(item, dict)})
+
+
+STALE_OAUTH2_CLIENT_IDS = ("stalwart",)
+
+
+def remove_stale_oauth2_clients(active_ids: set[str]) -> None:
+    """Drop leftover clients from earlier wiring (confidential `stalwart` vs public `stalwart-webui`)."""
+    clients_dir = INTEGRATION_DIR / "oidc-clients.d"
+    for stale in STALE_OAUTH2_CLIENT_IDS:
+        if stale in active_ids:
+            continue
+        sidecar = clients_dir / f"{stale}.yaml"
+        if sidecar.is_file():
+            sidecar.unlink()
+            print(f"  Removed stale OIDC sidecar {sidecar.name}")
+        existing = kanidm_cli("system", "oauth2", "get", stale, "--name", "idm_admin")
+        if not cli_exists(existing):
+            continue
+        deleted = kanidm_cli("system", "oauth2", "delete", stale, "--name", "idm_admin")
+        if not cli_ok(deleted, "nomatchingentries", "no matching", "item not found"):
+            raise RuntimeError(
+                f"Could not delete stale OAuth2 client {stale!r}: "
+                f"{cli_output(deleted).strip()[:500]}"
+            )
+        print(f"  Removed stale OAuth2 client {stale}")
 
 
 def oauth2_claim_maps_for(client_id: str, client: dict) -> list[dict]:

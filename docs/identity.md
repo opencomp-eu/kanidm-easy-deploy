@@ -34,9 +34,11 @@ Discovery is at that URL plus `/.well-known/openid-configuration`.
 |-----|--------|------|----------------|
 | OpenCloud | `opencloud` | public + PKCE | `openid profile email groups groups_name` plus `opencloudRoles` claim map |
 | Matrix MAS | `matrix` | confidential | `openid profile email` |
-| Stalwart / webmail | `stalwart` | confidential (optional) | `openid profile email` |
+| Stalwart / webmail | `stalwart-webui` | public + PKCE | `openid profile email` |
 
-OpenCloud maps Kanidm groups `opencloud-admin` / `opencloud-user` / `opencloud-guest` onto an `opencloudRoles` claim (`admin` / `user` / `guest`). The OpenCloud web client still requests the `groups` scope; that scope must stay on the Kanidm client or Kanidm denies the grant. Do not use the `groups` **claim** for OpenCloud roles: it contains UUIDs and SPNs.
+OpenCloud no longer uses the `oidc` role-assignment driver with Kanidm. Custom claims such as `opencloudRoles` often never reach the access token or UserInfo, which sent people to `/access-denied` after a successful login. The Kanidm overlay assigns the built-in `user` role at login (`PROXY_ROLE_ASSIGNMENT_DRIVER=default`). The operator in `opencloud-admin` is still recorded as `OC_ADMIN_USER_ID`.
+
+The OpenCloud web client still requests the `groups` scope; that scope must stay on the Kanidm client or Kanidm denies the grant.
 
 On a same-VPS engine install, `easydeploy-engine` writes client sidecars under `.kanidm-easy-deploy/integration/oidc-clients.d/` and provider sidecars into each app kit. Re-apply Kanidm first, then the apps.
 

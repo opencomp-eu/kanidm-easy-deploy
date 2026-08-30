@@ -11,6 +11,7 @@ import yaml
 from scripts.apply import (
     COMPOSE_PROJECT_NAME,
     apply_oauth2_claim_maps,
+    remove_stale_oauth2_clients,
     build_client_toml,
     build_server_toml,
     cli_exists,
@@ -442,3 +443,41 @@ def test_apply_oauth2_claim_maps_opencloud_defaults(monkeypatch):
         if call[:6] == ("system", "oauth2", "update-claim-map", "opencloud", "opencloudRoles", "opencloud-admin")
     )
     assert "admin" in admin
+
+
+def test_remove_stale_oauth2_clients_deletes_leftover_stalwart(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    clients_dir = tmp_path / "oidc-clients.d"
+    clients_dir.mkdir()
+    (clients_dir / "stalwart.yaml").write_text("client_id: stalwart\n")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        if args[:3] == ("system", "oauth2", "get"):
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="name: stalwart\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    remove_stale_oauth2_clients({"stalwart-webui", "opencloud"})
+    assert not (clients_dir / "stalwart.yaml").exists()
+    assert ("system", "oauth2", "delete", "stalwart", "--name", "idm_admin") in calls
+
+
+def test_remove_stale_oauth2_clients_keeps_active_stalwart(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    remove_stale_oauth2_clients({"stalwart"})
+    assert calls == []
