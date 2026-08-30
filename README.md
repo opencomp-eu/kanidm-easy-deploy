@@ -50,7 +50,7 @@ On first apply the kit:
 2. Creates the initial person from `users:` and prints a one-time credential enrollment link. Open that link to set the person's web/OIDC password and optional MFA.
 3. Creates the groups listed in `groups:` and memberships on that person.
 4. Registers OAuth2/OIDC clients from `oidc.clients` and engine sidecars.
-5. Creates a `stalwart-ldap` service account and API token for directory search.
+5. Creates a `stalwart-ldap` service account and API token for directory search, and adds it to `idm_mail_servers` so Stalwart can see person `mail` attributes.
 
 After that, manage people and groups **in Kanidm**, not in OpenCloud, Matrix, or Stalwart.
 

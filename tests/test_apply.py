@@ -21,6 +21,7 @@ from scripts.apply import (
     create_enrollment_link,
     derive_compose_files,
     ensure_kanidm_cli_state,
+    ensure_ldap_mail_read,
     ensure_ldap_token,
     kanidm_client_config_path,
     kanidm_issuer_url,
@@ -269,6 +270,35 @@ def test_ensure_ldap_token_creates_missing_account_before_generate(monkeypatch, 
     assert generate[:3] == ("-o", "json", "service-account") or generate[0:2] == ("-o", "json")
     assert "stalwart-ldap" in generate
     assert yaml.safe_load(secrets_path.read_text())["LDAP_TOKEN"] == "generated-ldap-token"
+
+
+def test_ensure_ldap_mail_read_adds_service_account_to_mail_groups(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    ensure_ldap_mail_read()
+    assert (
+        "group",
+        "add-members",
+        "idm_mail_servers",
+        "stalwart-ldap",
+        "--name",
+        "idm_admin",
+    ) in calls
+    assert (
+        "group",
+        "add-members",
+        "idm_people_pii_read",
+        "stalwart-ldap",
+        "--name",
+        "idm_admin",
+    ) in calls
 
 
 def test_cli_ok_accepts_expected_idempotency_error():

@@ -915,6 +915,7 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
 
     kanidm_cli("system", "domain", "set-ldap-allow-unix-password-bind", "true")
     ensure_ldap_token(secrets)
+    ensure_ldap_mail_read()
     apply_oauth2_clients(config, secrets)
     write_stalwart_identity_secrets(secrets)
 
@@ -988,6 +989,19 @@ def ensure_ldap_token(secrets: dict) -> None:
     secrets["LDAP_TOKEN"] = secret
     secrets["LDAP_TOKEN_CREATED"] = "1"
     save_yaml(SECRETS_PATH, secrets)
+
+
+def ensure_ldap_mail_read() -> None:
+    """Kanidm treats mail as PII; Stalwart's login filter needs to see it."""
+    for group in ("idm_mail_servers", "idm_people_pii_read"):
+        added = kanidm_cli(
+            "group", "add-members", group, "stalwart-ldap", "--name", "idm_admin"
+        )
+        if not cli_ok(added, "already", "duplicate", "members already"):
+            raise RuntimeError(
+                f"Could not add stalwart-ldap to {group}: "
+                f"{cli_output(added).strip()[:500]}"
+            )
 
 
 def apply_oauth2_clients(config: dict, secrets: dict) -> None:

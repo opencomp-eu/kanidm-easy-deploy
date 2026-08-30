@@ -48,7 +48,8 @@ Kanidm LDAP is read-only LDAPS on `kanidm:3636`.
 
 - Base DN is derived from the identity domain (`idm.example.com` → `dc=idm,dc=example,dc=com`).
 - Directory search uses the `stalwart-ldap` service account (`dn=token` + API token).
-- IMAP/SMTP/WebUI binds use each person's **Kanidm password** (POSIX password, or primary password fallback on `mail-users`). Passkeys are not accepted over LDAP.
+- That account is in `idm_mail_servers` and `idm_people_pii_read` so login-by-email can see `mail` (Kanidm hides mail from anonymous/unprivileged binds).
+- IMAP/SMTP/WebUI binds use each person's **Kanidm password** (POSIX password, or primary password fallback on `mail-users`). Passkeys are not accepted over LDAP. If both a POSIX password and a primary password exist, LDAP accepts only the POSIX one.
 
 Anonymous bind is not supported. StartTLS is not supported.
 
