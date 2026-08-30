@@ -20,10 +20,11 @@ services:
     image: ${KANIDM_TOOLS_IMAGE}
     profiles: ["cli"]
     volumes:
-      - ${KANIDM_DATA_DIR}:/data
+      - ${KANIDM_DATA_DIR}/kanidm-client-config:/root/.config/kanidm:ro
+      - ${KANIDM_DATA_DIR}/kanidm_tokens:/root/.cache/kanidm_tokens
     networks:
       - kanidm-net
-    entrypoint: ["kanidm", "-c", "/data/client.toml"]
+    entrypoint: ["kanidm"]
 
 networks:
   kanidm-net:

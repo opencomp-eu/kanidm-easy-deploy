@@ -4,9 +4,9 @@
 kanidm:
   domain: idm.example.com
   image: docker.io/kanidm/server
-  tag: "1.7.3"
+  tag: "1.11.1"
   tools_image: docker.io/kanidm/tools
-  tools_tag: "1.7.3"
+  tools_tag: "1.11.1"
   data_dir: /var/lib/kanidm
   # LDAP is always enabled on the container network (ldaps://kanidm:3636).
   ldap: true

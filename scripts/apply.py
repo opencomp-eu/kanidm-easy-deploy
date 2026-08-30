@@ -29,6 +29,9 @@ CADDYFILE = PROJECT_ROOT / "caddy" / "Caddyfile"
 INTEGRATION_DIR = STATE_DIR / "integration"
 INTEGRATION_CADDY_FRAGMENT = INTEGRATION_DIR / "caddy.caddy"
 DEFAULT_INTEGRATE_NETWORK = "easydeploy-net"
+DEFAULT_KANIDM_TAG = "1.11.1"
+KANIDM_CLIENT_CONFIG_BASENAME = "kanidm-client-config"
+KANIDM_TOKENS_BASENAME = "kanidm_tokens"
 
 SECRET_KEYS = (
     "IDM_ADMIN_PASSWORD",
@@ -266,9 +269,39 @@ def build_server_toml(config: dict) -> str:
 def build_client_toml(domain: str) -> str:
     return (
         f'uri = "https://kanidm:8443"\n'
-        f'verify_ca = false\n'
-        f'# Public origin is {kanidm_origin(domain)}\n'
+        f"verify_ca = false\n"
+        f"# Public origin is {kanidm_origin(domain)}\n"
     )
+
+
+def kanidm_client_config_path(data_dir: Path) -> Path:
+    return data_dir / KANIDM_CLIENT_CONFIG_BASENAME
+
+
+def kanidm_tokens_path(data_dir: Path) -> Path:
+    return data_dir / KANIDM_TOKENS_BASENAME
+
+
+def ensure_kanidm_cli_state(data_dir: Path) -> None:
+    tokens = kanidm_tokens_path(data_dir)
+    if not tokens.is_file():
+        tokens.write_text("{}\n")
+    tokens.chmod(0o600)
+
+
+def kanidm_cli_volume_mounts(data_dir: str | Path) -> list[str]:
+    root = Path(data_dir)
+    ensure_kanidm_cli_state(root)
+    config = kanidm_client_config_path(root)
+    tokens = kanidm_tokens_path(root)
+    if not config.is_file():
+        raise FileNotFoundError(f"Missing Kanidm client config: {config}")
+    return [
+        "-v",
+        f"{config}:/root/.config/kanidm:ro",
+        "-v",
+        f"{tokens}:/root/.cache/kanidm_tokens",
+    ]
 
 
 def generate_tls_material(data_dir: Path, domain: str) -> None:
@@ -339,8 +372,8 @@ def render_integration_fragment(config: dict) -> None:
 
 def write_compose_env(config: dict) -> None:
     kanidm = config["kanidm"]
-    image = f"{kanidm.get('image', 'docker.io/kanidm/server')}:{kanidm.get('tag', '1.7.3')}"
-    tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', '1.7.3'))}"
+    image = f"{kanidm.get('image', 'docker.io/kanidm/server')}:{kanidm.get('tag', DEFAULT_KANIDM_TAG)}"
+    tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', DEFAULT_KANIDM_TAG))}"
     lines = [
         f"KANIDM_IMAGE={image}",
         f"KANIDM_TOOLS_IMAGE={tools}",
@@ -358,7 +391,11 @@ def render_runtime_artifacts(config: dict, secrets: dict) -> None:
     data_dir = hostfs.ensure_writable_directory(kanidm["data_dir"])
     generate_tls_material(data_dir, str(kanidm["domain"]))
     (data_dir / "server.toml").write_text(build_server_toml(config))
-    (data_dir / "client.toml").write_text(build_client_toml(str(kanidm["domain"])))
+    client_config = build_client_toml(str(kanidm["domain"]))
+    kanidm_client_config_path(data_dir).write_text(client_config)
+    # Legacy alias; the kanidm CLI reads ~/.config/kanidm, not client.toml.
+    (data_dir / "client.toml").write_text(client_config)
+    ensure_kanidm_cli_state(data_dir)
     if proxy_mode(config) == "integrate":
         render_integration_fragment(config)
     else:
@@ -430,7 +467,7 @@ def run_compose(*args: str) -> None:
 def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     config = load_config()
     kanidm = config["kanidm"]
-    tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', '1.7.3'))}"
+    tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', DEFAULT_KANIDM_TAG))}"
     cmd = [
         "docker",
         "run",
@@ -438,12 +475,9 @@ def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.Complete
         "-i",
         "--network",
         "kanidm-net",
-        "-v",
-        f"{kanidm['data_dir']}:/data",
+        *kanidm_cli_volume_mounts(kanidm["data_dir"]),
         tools,
         "kanidm",
-        "-c",
-        "/data/client.toml",
         *args,
     ]
     return subprocess.run(
@@ -463,7 +497,7 @@ def _kanidmd_admin(
     use_exec: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     config = load_config()
-    image = f"{config['kanidm'].get('image', 'docker.io/kanidm/server')}:{config['kanidm'].get('tag', '1.7.3')}"
+    image = f"{config['kanidm'].get('image', 'docker.io/kanidm/server')}:{config['kanidm'].get('tag', DEFAULT_KANIDM_TAG)}"
     base_cmd = ["kanidmd", subcommand, name, "-c", "/data/server.toml"]
     if use_exec:
         cmd = ["docker", "exec", "-i", "kanidm", *base_cmd]

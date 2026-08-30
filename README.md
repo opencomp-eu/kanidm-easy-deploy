@@ -40,7 +40,7 @@ bash apply.sh
 - **`.kanidm-easy-deploy/secrets.yaml`** — generated secrets (auto-created on first apply; do not commit).
 - **`/var/lib/kanidm`** (default) — Kanidm database, TLS material, and `server.toml`.
 
-Pin the Kanidm image tag in `deploy.yaml` (`kanidm.tag`) instead of floating `latest` for production.
+Pin the Kanidm image tag in `deploy.yaml` (`kanidm.tag`) instead of floating `latest` for production. New installs default to **1.11.1**. If you already run an older tag, Kanidm requires **sequential** upgrades (1.7 → 1.8 → … → target); run `kanidmd domain upgrade-check` before each step. With almost no data yet, a fresh `data_dir` on the latest tag is often simpler.
 
 ### Identity
 

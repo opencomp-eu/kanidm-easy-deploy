@@ -57,9 +57,9 @@ def update_from_wizard(
     kanidm = config.setdefault("kanidm", {})
     kanidm["domain"] = domain
     kanidm.setdefault("image", "docker.io/kanidm/server")
-    kanidm.setdefault("tag", "1.7.3")
+    kanidm.setdefault("tag", "1.11.1")
     kanidm.setdefault("tools_image", "docker.io/kanidm/tools")
-    kanidm.setdefault("tools_tag", "1.7.3")
+    kanidm.setdefault("tools_tag", "1.11.1")
     kanidm["data_dir"] = data_dir.rstrip("/")
     kanidm["ldap"] = True
 

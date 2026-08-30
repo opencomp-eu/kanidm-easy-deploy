@@ -14,9 +14,12 @@ from scripts.apply import (
     build_server_toml,
     configured_groups,
     derive_compose_files,
+    ensure_kanidm_cli_state,
+    kanidm_client_config_path,
     kanidm_issuer_url,
     kanidm_origin,
     kanidm_portal_caddy_block,
+    kanidm_tokens_path,
     ldap_base_dn,
     merge_oidc_clients,
     oidc_clients,
@@ -89,6 +92,12 @@ def test_build_client_toml_points_at_container():
     assert "verify_ca = false" in text
 
 
+def test_kanidm_cli_state_files(tmp_path: Path):
+    ensure_kanidm_cli_state(tmp_path)
+    assert kanidm_tokens_path(tmp_path).is_file()
+    assert kanidm_client_config_path(tmp_path).name == "kanidm-client-config"
+
+
 def test_derive_compose_files_integrate():
     files = derive_compose_files(_base_config(proxy={"type": "caddy", "mode": "integrate"}))
     assert files == ["docker-compose.yml", "integrate.yml"]
@@ -142,7 +151,7 @@ def test_render_template_requires_placeholders():
         render_template("{{MISSING}}", {})
 
 
-def test_kanidm_cli_places_config_before_subcommand(monkeypatch):
+def test_kanidm_cli_mounts_client_config(monkeypatch):
     from scripts import apply as apply_module
 
     captured: dict[str, list] = {}
@@ -151,15 +160,25 @@ def test_kanidm_cli_places_config_before_subcommand(monkeypatch):
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
+    data_dir = Path("/var/lib/kanidm")
+    config_file = data_dir / "kanidm-client-config"
     monkeypatch.setattr(apply_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(apply_module, "load_config", lambda: _base_config(kanidm={"data_dir": "/var/lib/kanidm"}))
+    monkeypatch.setattr(
+        apply_module,
+        "load_config",
+        lambda: _base_config(kanidm={"data_dir": str(data_dir)}),
+    )
+    monkeypatch.setattr(apply_module, "kanidm_cli_volume_mounts", lambda _dir: [
+        "-v",
+        f"{config_file}:/root/.config/kanidm:ro",
+        "-v",
+        f"{data_dir / 'kanidm_tokens'}:/root/.cache/kanidm_tokens",
+    ])
     apply_module.kanidm_cli("login", "--name", "idm_admin")
-    idx = captured["cmd"].index("-c")
-    login_idx = captured["cmd"].index("login")
-    assert idx < login_idx
-    assert captured["cmd"][idx + 1] == "/data/client.toml"
-    vol_idx = captured["cmd"].index("-v")
-    assert captured["cmd"][vol_idx + 1] == "/var/lib/kanidm:/data"
+    assert "login" in captured["cmd"]
+    assert "--name" in captured["cmd"]
+    assert "-c" not in captured["cmd"]
+    assert f"{config_file}:/root/.config/kanidm:ro" in captured["cmd"]
 
 
 def test_recover_account_retries_with_disable(monkeypatch):

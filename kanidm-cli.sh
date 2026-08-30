@@ -22,10 +22,16 @@ source "${COMPOSE_ENV}"
 
 DATA_DIR="${KANIDM_DATA_DIR:?KANIDM_DATA_DIR not set in compose.env}"
 TOOLS="${KANIDM_TOOLS_IMAGE:?KANIDM_TOOLS_IMAGE not set in compose.env}"
-CLIENT="${DATA_DIR}/client.toml"
+CONFIG="${DATA_DIR}/kanidm-client-config"
+TOKENS="${DATA_DIR}/kanidm_tokens"
 
-if [[ ! -f "${CLIENT}" ]]; then
-	die "Missing ${CLIENT} — run bash apply.sh first."
+if [[ ! -f "${CONFIG}" ]]; then
+	die "Missing ${CONFIG} — run bash apply.sh first."
+fi
+
+if [[ ! -f "${TOKENS}" ]]; then
+	printf '{}\n' >"${TOKENS}"
+	chmod 600 "${TOKENS}"
 fi
 
 interactive=0
@@ -48,6 +54,7 @@ fi
 
 exec docker run "${docker_args[@]}" \
 	--network kanidm-net \
-	-v "${DATA_DIR}:/data" \
+	-v "${CONFIG}:/root/.config/kanidm:ro" \
+	-v "${TOKENS}:/root/.cache/kanidm_tokens" \
 	"${TOOLS}" \
-	kanidm -c /data/client.toml "$@"
+	kanidm "$@"
