@@ -22,7 +22,7 @@ proxy:
 # Initial people created on first apply. Kanidm remains the source of truth
 # after that — manage users and groups in Kanidm, not in the apps.
 users:
-  - username: admin
+  - username: operator
     display_name: Admin
     email: admin@example.com
     groups:

@@ -51,6 +51,9 @@ if [[ "${interactive}" -eq 1 ]]; then
 		docker_args+=(-t)
 	fi
 fi
+if [[ -n "${KANIDM_PASSWORD:-}" ]]; then
+	docker_args+=(-e "KANIDM_PASSWORD=${KANIDM_PASSWORD}")
+fi
 
 exec docker run "${docker_args[@]}" \
 	--network kanidm-net \

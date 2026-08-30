@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -464,7 +465,11 @@ def run_compose(*args: str) -> None:
     subprocess.run(cmd, cwd=COMPOSE_DIR, check=True, env=env)
 
 
-def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def kanidm_cli(
+    *args: str,
+    password: str | None = None,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     config = load_config()
     kanidm = config["kanidm"]
     tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', DEFAULT_KANIDM_TAG))}"
@@ -476,10 +481,10 @@ def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.Complete
         "--network",
         "kanidm-net",
         *kanidm_cli_volume_mounts(kanidm["data_dir"]),
-        tools,
-        "kanidm",
-        *args,
     ]
+    if password:
+        cmd.extend(["-e", f"KANIDM_PASSWORD={password}"])
+    cmd.extend([tools, "kanidm", *args])
     return subprocess.run(
         cmd,
         input=input_text,
@@ -582,7 +587,7 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             file=sys.stderr,
         )
 
-    login = kanidm_cli("login", "--name", "idm_admin", input_text=secrets["IDM_ADMIN_PASSWORD"] + "\n")
+    login = kanidm_cli("login", "--name", "idm_admin", password=secrets["IDM_ADMIN_PASSWORD"])
     if login.returncode != 0:
         print(
             "Warning: kanidm CLI login as idm_admin failed. "
@@ -612,7 +617,15 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             kanidm_cli("person", "update", username, "--mail", email)
         password = str(user.get("password") or "").strip() or secrets["ADMIN_PASSWORD"]
         kanidm_cli("person", "posix", "set", username)
-        kanidm_cli("person", "posix", "set-password", username, input_text=f"{password}\n{password}\n")
+        kanidm_cli(
+            "person",
+            "posix",
+            "set-password",
+            username,
+            "--name",
+            "idm_admin",
+            password=password,
+        )
         for group in user.get("groups") or []:
             name = str(group or "").strip()
             if name:
@@ -719,6 +732,83 @@ def write_consumer_secret(client_id: str, secret: str, domain: str) -> None:
             write_sidecar(sibling, existing)
 
 
+def kanidm_server_image(config: dict) -> str:
+    kanidm = config["kanidm"]
+    return f"{kanidm.get('image', 'docker.io/kanidm/server')}:{kanidm.get('tag', DEFAULT_KANIDM_TAG)}"
+
+
+def kanidm_container_health() -> str:
+    result = subprocess.run(
+        ["docker", "inspect", "kanidm", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{end}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (result.stdout or "").strip()
+
+
+def kanidm_healthcheck_ok() -> bool:
+    result = subprocess.run(
+        ["docker", "exec", "kanidm", "/sbin/kanidmd", "healthcheck", "-c", "/data/server.toml"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def reindex_database_offline(config: dict) -> None:
+    """Offline reindex — fixes some 1.11.x fresh-install index issues."""
+    data_dir = str(config["kanidm"]["data_dir"])
+    image = kanidm_server_image(config)
+    print("Stopping Kanidm for offline database reindex…")
+    subprocess.run(["docker", "stop", "kanidm"], check=False)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{data_dir}:/data",
+            image,
+            "kanidmd",
+            "database",
+            "reindex",
+            "-c",
+            "/data/server.toml",
+        ],
+        check=True,
+    )
+
+
+def wait_for_kanidm_ready(timeout_sec: int = 300) -> None:
+    """Wait until the server responds to health checks (Docker or kanidmd healthcheck)."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        health = kanidm_container_health()
+        if health == "healthy" or kanidm_healthcheck_ok():
+            return
+        if health == "unhealthy":
+            break
+        time.sleep(5)
+    raise RuntimeError(
+        "Kanidm did not become healthy in time. "
+        "Check: docker logs kanidm"
+    )
+
+
+def start_kanidm_stack() -> None:
+    run_compose("up", "-d", "--remove-orphans")
+    config = load_config()
+    try:
+        wait_for_kanidm_ready()
+    except RuntimeError:
+        print("Kanidm healthcheck failed; trying offline database reindex (common on 1.11.x fresh installs)…")
+        reindex_database_offline(config)
+        run_compose("up", "-d", "--remove-orphans")
+        wait_for_kanidm_ready()
+
+
 def write_stalwart_identity_secrets(secrets: dict) -> None:
     sibling = (
         PROJECT_ROOT.parent
@@ -762,7 +852,7 @@ def reconcile_runtime(skip_pull: bool = False) -> None:
         print("Pulling Kanidm stack images…")
         run_compose("pull")
     print("Starting Kanidm stack…")
-    run_compose("up", "-d", "--wait", "--remove-orphans")
+    start_kanidm_stack()
     bootstrap_identity(config, secrets)
 
 
@@ -778,13 +868,10 @@ def print_summary(config: dict, secrets: dict) -> None:
     print(f"Secrets file:    {SECRETS_PATH}")
     print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}  (web UI / CLI admin)")
     admin = (config.get("users") or [{}])[0]
-    username = admin.get("username", "admin")
-    if not str(admin.get("password") or "").strip():
-        print(
-            f"Person account:  {username} / {secrets.get('ADMIN_PASSWORD')} "
-            f"(for OpenCloud/Matrix/Stalwart; created on bootstrap)"
-        )
-    print("  Sign in at the portal with idm_admin, not the person username, until bootstrap completes.")
+    username = admin.get("username", "operator")
+    person_password = str(admin.get("password") or "").strip() or secrets.get("ADMIN_PASSWORD")
+    print(f"Person account:  {username} / {person_password} (portal + apps)")
+    print("  idm_admin is for break-glass admin only; use the person account above for daily login.")
     clients = oidc_clients(config)
     if clients:
         print(f"OIDC clients:    {', '.join(str(item.get('client_id')) for item in clients if isinstance(item, dict))}")

@@ -71,7 +71,7 @@ gather_config() {
 	echo
 	echo -e "${BOLD}  Initial admin person${RESET}"
 	echo "  Kanidm is the source of truth for users and groups."
-	ask admin_username "Username" "admin"
+	ask admin_username "Username" "operator"
 	ask admin_display_name "Display name" "Admin"
 	ask admin_email "Email" "admin@${base_domain}"
 	ask_secret admin_password "Password (leave empty to auto-generate on apply)"

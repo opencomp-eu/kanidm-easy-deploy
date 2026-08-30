@@ -151,7 +151,7 @@ def test_render_template_requires_placeholders():
         render_template("{{MISSING}}", {})
 
 
-def test_kanidm_cli_mounts_client_config(monkeypatch):
+def test_kanidm_cli_uses_password_env(monkeypatch):
     from scripts import apply as apply_module
 
     captured: dict[str, list] = {}
@@ -160,25 +160,17 @@ def test_kanidm_cli_mounts_client_config(monkeypatch):
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
-    data_dir = Path("/var/lib/kanidm")
-    config_file = data_dir / "kanidm-client-config"
     monkeypatch.setattr(apply_module.subprocess, "run", fake_run)
     monkeypatch.setattr(
         apply_module,
         "load_config",
-        lambda: _base_config(kanidm={"data_dir": str(data_dir)}),
+        lambda: _base_config(kanidm={"data_dir": str(Path("/var/lib/kanidm"))}),
     )
-    monkeypatch.setattr(apply_module, "kanidm_cli_volume_mounts", lambda _dir: [
-        "-v",
-        f"{config_file}:/root/.config/kanidm:ro",
-        "-v",
-        f"{data_dir / 'kanidm_tokens'}:/root/.cache/kanidm_tokens",
-    ])
-    apply_module.kanidm_cli("login", "--name", "idm_admin")
-    assert "login" in captured["cmd"]
-    assert "--name" in captured["cmd"]
+    monkeypatch.setattr(apply_module, "kanidm_cli_volume_mounts", lambda _dir: [])
+    apply_module.kanidm_cli("login", "--name", "idm_admin", password="secret-pass")
+    assert "-e" in captured["cmd"]
+    assert "KANIDM_PASSWORD=secret-pass" in captured["cmd"]
     assert "-c" not in captured["cmd"]
-    assert f"{config_file}:/root/.config/kanidm:ro" in captured["cmd"]
 
 
 def test_recover_account_retries_with_disable(monkeypatch):
