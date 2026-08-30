@@ -32,9 +32,11 @@ Discovery is at that URL plus `/.well-known/openid-configuration`.
 
 | App | Client | Type | Typical scopes |
 |-----|--------|------|----------------|
-| OpenCloud | `opencloud` | public + PKCE | `openid profile email groups groups_name` |
+| OpenCloud | `opencloud` | public + PKCE | `openid profile email groups_name` plus `opencloudRoles` claim map |
 | Matrix MAS | `matrix` | confidential | `openid profile email` |
 | Stalwart / webmail | `stalwart` | confidential (optional) | `openid profile email` |
+
+OpenCloud maps Kanidm groups `opencloud-admin` / `opencloud-user` / `opencloud-guest` onto an `opencloudRoles` claim (`admin` / `user` / `guest`). Do not use Kanidm’s `groups` scope for OpenCloud: that claim contains UUIDs and SPNs, which OpenCloud treats as a single unmatched role string.
 
 On a same-VPS engine install, `easydeploy-engine` writes client sidecars under `.kanidm-easy-deploy/integration/oidc-clients.d/` and provider sidecars into each app kit. Re-apply Kanidm first, then the apps.
 
@@ -44,7 +46,7 @@ Kanidm LDAP is read-only LDAPS on `kanidm:3636`.
 
 - Base DN is derived from the identity domain (`idm.example.com` → `dc=idm,dc=example,dc=com`).
 - Directory search uses the `stalwart-ldap` service account (`dn=token` + API token).
-- IMAP/SMTP password binds use each person's **POSIX** password (enabled on people created by this kit).
+- IMAP/SMTP/WebUI binds use each person's **Kanidm password** (POSIX password, or primary password fallback on `mail-users`). Passkeys are not accepted over LDAP.
 
 Anonymous bind is not supported. StartTLS is not supported.
 

@@ -50,7 +50,18 @@ DEFAULT_GROUPS = (
     "mail-users",
 )
 
-DEFAULT_OIDC_SCOPES = ["openid", "profile", "email", "groups", "groups_name"]
+DEFAULT_OIDC_SCOPES = ["openid", "profile", "email", "groups_name"]
+DEFAULT_OPENCLOUD_CLAIM_MAPS = [
+    {
+        "claim": "opencloudRoles",
+        "join": "array",
+        "mappings": [
+            {"group": "opencloud-admin", "values": ["admin"]},
+            {"group": "opencloud-user", "values": ["user"]},
+            {"group": "opencloud-guest", "values": ["guest"]},
+        ],
+    }
+]
 
 
 def to_bool(value: Any) -> bool:
@@ -843,10 +854,16 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
         kanidm_cli("person", "posix", "set", username, "--name", "idm_admin")
         for group in user.get("groups") or []:
             name = str(group or "").strip()
-            if name:
-                kanidm_cli(
-                    "group", "add-members", name, username,
-                    "--name", "idm_admin",
+            if not name:
+                continue
+            added = kanidm_cli(
+                "group", "add-members", name, username,
+                "--name", "idm_admin",
+            )
+            if not cli_ok(added, "already", "duplicate", "members already"):
+                raise RuntimeError(
+                    f"Could not add {username!r} to group {name!r}: "
+                    f"{cli_output(added).strip()[:500]}"
                 )
         status = credential_status(username)
         if not cli_ok(status) or "no credentials" in f"{status.stdout}\n{status.stderr}".lower():
@@ -1018,6 +1035,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 "system", "oauth2", "prefer-short-username", client_id,
                 "--name", "idm_admin",
             )
+        apply_oauth2_claim_maps(client_id, client)
         if to_bool(client.get("legacy_crypto")):
             kanidm_cli("system", "oauth2", "warning-enable-legacy-crypto", client_id)
         if to_bool(client.get("disable_pkce")):
@@ -1044,6 +1062,53 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 f"{(verified.stderr or verified.stdout or '').strip()[:500]}"
             )
         print(f"  OIDC client ready: {client_id} → {landing}")
+
+
+def oauth2_claim_maps_for(client_id: str, client: dict) -> list[dict]:
+    raw = client.get("claim_maps")
+    if isinstance(raw, list) and raw:
+        return [item for item in raw if isinstance(item, dict)]
+    if client_id == "opencloud" or client_id.startswith("opencloud-"):
+        return DEFAULT_OPENCLOUD_CLAIM_MAPS
+    return []
+
+
+def apply_oauth2_claim_maps(client_id: str, client: dict) -> None:
+    """Map Kanidm groups to application role strings (not UUID/SPN groups claims)."""
+    for claim_map in oauth2_claim_maps_for(client_id, client):
+        claim = str(claim_map.get("claim") or "").strip()
+        if not claim:
+            continue
+        join = str(claim_map.get("join") or "array").strip() or "array"
+        joined = kanidm_cli(
+            "system", "oauth2", "update-claim-map-join", client_id, claim, join,
+            "--name", "idm_admin",
+        )
+        if not cli_ok(joined, "already"):
+            raise RuntimeError(
+                f"Could not set claim-map join for {client_id!r} {claim!r}: "
+                f"{cli_output(joined).strip()[:500]}"
+            )
+        for mapping in claim_map.get("mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            group = str(mapping.get("group") or "").strip()
+            values = [
+                str(item).strip()
+                for item in (mapping.get("values") or [])
+                if str(item).strip()
+            ]
+            if not group or not values:
+                continue
+            mapped = kanidm_cli(
+                "system", "oauth2", "update-claim-map",
+                client_id, claim, group, *values, "--name", "idm_admin",
+            )
+            if not cli_ok(mapped, "already"):
+                raise RuntimeError(
+                    f"Could not map {group!r} onto {client_id!r} claim {claim!r}: "
+                    f"{cli_output(mapped).strip()[:500]}"
+                )
 
 
 def write_consumer_secret(client_id: str, secret: str, domain: str) -> None:

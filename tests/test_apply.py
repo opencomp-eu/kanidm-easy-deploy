@@ -10,6 +10,7 @@ import yaml
 
 from scripts.apply import (
     COMPOSE_PROJECT_NAME,
+    apply_oauth2_claim_maps,
     build_client_toml,
     build_server_toml,
     cli_exists,
@@ -395,3 +396,34 @@ def test_recover_account_retries_legacy_with_disable(monkeypatch):
         ("disable-account", "idm_admin", False),
         ("recover-account", "idm_admin", False),
     ]
+
+
+def test_apply_oauth2_claim_maps_opencloud_defaults(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    apply_oauth2_claim_maps("opencloud", {})
+    assert (
+        "system",
+        "oauth2",
+        "update-claim-map-join",
+        "opencloud",
+        "opencloudRoles",
+        "array",
+    ) in [call[:6] for call in calls]
+    mapped_groups = {
+        call[5] for call in calls if call[:4] == ("system", "oauth2", "update-claim-map", "opencloud")
+    }
+    assert mapped_groups == {"opencloud-admin", "opencloud-user", "opencloud-guest"}
+    admin = next(
+        call
+        for call in calls
+        if call[:6] == ("system", "oauth2", "update-claim-map", "opencloud", "opencloudRoles", "opencloud-admin")
+    )
+    assert "admin" in admin
