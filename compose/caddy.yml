@@ -1,0 +1,30 @@
+---
+services:
+  caddy:
+    container_name: kanidm_caddy
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      kanidm:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ${KED_CADDYFILE}:/etc/caddy/Caddyfile:ro
+      - kanidm_caddy_data:/data
+      - kanidm_caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - kanidm-net
+
+volumes:
+  kanidm_caddy_data:
+  kanidm_caddy_config:
+
+networks:
+  kanidm-net:
+    external: true
+    name: kanidm-net

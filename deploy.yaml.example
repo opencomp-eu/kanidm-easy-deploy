@@ -1,0 +1,45 @@
+# kanidm-easy-deploy — operator configuration
+# Copy to deploy.yaml and run: bash apply.sh
+
+kanidm:
+  domain: idm.example.com
+  image: docker.io/kanidm/server
+  tag: "1.7.3"
+  tools_image: docker.io/kanidm/tools
+  tools_tag: "1.7.3"
+  data_dir: /var/lib/kanidm
+  # LDAP is always enabled on the container network (ldaps://kanidm:3636).
+  ldap: true
+
+proxy:
+  type: caddy
+  # standalone — this kit runs its own Caddy on :443 (single-service VPS)
+  # integrate — join easydeploy-net; easydeploy-engine owns Caddy (multi-service VPS)
+  mode: standalone
+  integrate:
+    network: easydeploy-net
+
+# Initial people created on first apply. Kanidm remains the source of truth
+# after that — manage users and groups in Kanidm, not in the apps.
+users:
+  - username: admin
+    display_name: Admin
+    email: admin@example.com
+    groups:
+      - opencloud-admin
+      - opencloud-user
+      - matrix-admins
+      - mail-users
+
+# Groups created on apply so OpenCloud / Matrix / Stalwart role mapping works.
+groups:
+  - opencloud-admin
+  - opencloud-user
+  - opencloud-guest
+  - matrix-admins
+  - mail-users
+
+oidc:
+  enabled: true
+  # Engine writes extra clients to .kanidm-easy-deploy/integration/oidc-clients.d/
+  clients: []

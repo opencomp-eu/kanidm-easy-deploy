@@ -1,0 +1,31 @@
+---
+services:
+  kanidm:
+    container_name: kanidm
+    image: ${KANIDM_IMAGE}
+    restart: unless-stopped
+    volumes:
+      - ${KANIDM_DATA_DIR}:/data
+    networks:
+      - kanidm-net
+    healthcheck:
+      test: ["CMD-SHELL", "kanidmd healthcheck || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  kanidm-cli:
+    container_name: kanidm_cli
+    image: ${KANIDM_TOOLS_IMAGE}
+    profiles: ["cli"]
+    volumes:
+      - ${KANIDM_DATA_DIR}/client.toml:/data/client.toml:ro
+      - ${KANIDM_DATA_DIR}/chain.pem:/data/chain.pem:ro
+    networks:
+      - kanidm-net
+    entrypoint: ["kanidm"]
+
+networks:
+  kanidm-net:
+    name: kanidm-net
