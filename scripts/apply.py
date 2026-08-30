@@ -660,13 +660,13 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
     """Create the first person, groups, OIDC clients, and LDAP token."""
     print("Bootstrapping Kanidm identity (idm_admin, groups, OIDC, LDAP)…")
     if not ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"]):
-        print(
+        raise RuntimeError(
+            "Kanidm bootstrap cannot authenticate as idm_admin; refusing to "
+            "report a partially configured deployment.\n"
             "Recover manually:\n"
             "  docker exec -i kanidm kanidmd disable-account idm_admin -c /data/server.toml\n"
-            "  docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml",
-            file=sys.stderr,
+            "  docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml"
         )
-        return
 
     for group in configured_groups(config):
         created = kanidm_cli("group", "create", group)
@@ -745,7 +745,16 @@ def ensure_ldap_token(secrets: dict) -> None:
 
 def apply_oauth2_clients(config: dict, secrets: dict) -> None:
     domain = str(config["kanidm"]["domain"])
-    for client in oidc_clients(config):
+    clients = oidc_clients(config)
+    if not clients:
+        print(
+            "Warning: no OIDC client definitions found. In an engine deployment, "
+            "check .kanidm-easy-deploy/integration/oidc-clients.d/ and ensure the "
+            "application services are enabled in easydeploy-engine/engine.yaml.",
+            file=sys.stderr,
+        )
+        return
+    for client in clients:
         if not isinstance(client, dict):
             continue
         client_id = str(client.get("client_id") or "").strip()
@@ -760,34 +769,78 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
             print(f"Warning: OIDC client {client_id!r} has no landing_url/redirect_uris; skipped.", file=sys.stderr)
             continue
         public = to_bool(client.get("public"))
-        if public:
-            created = kanidm_cli("system", "oauth2", "create-public", client_id, name, landing)
+        existing = kanidm_cli("system", "oauth2", "get", client_id, "--name", "idm_admin")
+        if existing.returncode != 0:
+            if public:
+                created = kanidm_cli(
+                    "system", "oauth2", "create-public", client_id, name, landing,
+                    "--name", "idm_admin",
+                )
+            else:
+                created = kanidm_cli(
+                    "system", "oauth2", "create", client_id, name, landing,
+                    "--name", "idm_admin",
+                )
+            if created.returncode != 0:
+                raise RuntimeError(
+                    f"Could not create OAuth2 client {client_id!r}: "
+                    f"{(created.stderr or created.stdout or '').strip()[:500]}"
+                )
         else:
-            created = kanidm_cli("system", "oauth2", "create", client_id, name, landing)
-        if not cli_ok(created, "already exists", "duplicate"):
-            print(
-                f"Warning: could not create OAuth2 client {client_id!r}: {(created.stderr or created.stdout or '')[:240]}",
-                file=sys.stderr,
+            kanidm_cli(
+                "system", "oauth2", "set-landing-url", client_id, landing,
+                "--name", "idm_admin",
             )
         for url in redirects:
-            kanidm_cli("system", "oauth2", "add-redirect-url", client_id, url)
+            result = kanidm_cli(
+                "system", "oauth2", "add-redirect-url", client_id, url,
+                "--name", "idm_admin",
+            )
+            if not cli_ok(result, "already", "duplicate"):
+                raise RuntimeError(
+                    f"Could not add redirect URL to OAuth2 client {client_id!r}: "
+                    f"{(result.stderr or result.stdout or '').strip()[:500]}"
+                )
         scopes = [str(item) for item in (client.get("scopes") or DEFAULT_OIDC_SCOPES) if str(item).strip()]
         if scopes:
-            kanidm_cli("system", "oauth2", "update-scope-map", client_id, "idm_all_persons", *scopes)
+            result = kanidm_cli(
+                "system", "oauth2", "update-scope-map", client_id,
+                "idm_all_persons", *scopes, "--name", "idm_admin",
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Could not configure scopes for OAuth2 client {client_id!r}: "
+                    f"{(result.stderr or result.stdout or '').strip()[:500]}"
+                )
         if to_bool(client.get("prefer_short_username", True)):
-            kanidm_cli("system", "oauth2", "prefer-short-username", client_id)
+            kanidm_cli(
+                "system", "oauth2", "prefer-short-username", client_id,
+                "--name", "idm_admin",
+            )
         if to_bool(client.get("legacy_crypto")):
             kanidm_cli("system", "oauth2", "warning-enable-legacy-crypto", client_id)
         if to_bool(client.get("disable_pkce")):
             kanidm_cli("system", "oauth2", "warning-insecure-client-disable-pkce", client_id)
         if not public:
-            shown = kanidm_cli("system", "oauth2", "show-basic-secret", client_id)
+            shown = kanidm_cli(
+                "system", "oauth2", "show-basic-secret", client_id,
+                "--name", "idm_admin",
+            )
             secret = (shown.stdout or "").strip().splitlines()
             value = next((line.strip() for line in reversed(secret) if line.strip() and not line.lower().startswith("name")), "")
             if value:
                 secrets[f"OIDC_SECRET_{client_id.upper()}"] = value
                 save_yaml(SECRETS_PATH, secrets)
                 write_consumer_secret(client_id, value, domain)
+        verified = kanidm_cli(
+            "system", "oauth2", "get", client_id, "--name", "idm_admin"
+        )
+        if verified.returncode != 0:
+            raise RuntimeError(
+                f"OAuth2 client {client_id!r} could not be verified after apply: "
+                f"{(verified.stderr or verified.stdout or '').strip()[:500]}"
+            )
+        print(f"  OIDC client ready: {client_id} → {landing}")
 
 
 def write_consumer_secret(client_id: str, secret: str, domain: str) -> None:
