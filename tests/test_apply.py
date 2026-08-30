@@ -211,25 +211,52 @@ def test_kanidm_cli_uses_password_env(monkeypatch):
     assert "-c" not in captured["cmd"]
 
 
-def test_recover_account_retries_with_disable(monkeypatch):
+def test_recover_account_parses_modern_scripting_output(monkeypatch):
     from scripts import apply as apply_module
 
-    calls: list[tuple[str, str]] = []
+    def fake_admin(name: str, subcommand: str, *, scripting=False, use_exec=True):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"output":"generated-modern-password"}\n',
+            stderr="",
+        )
 
-    def fake_admin(name: str, subcommand: str, *, password=None, use_exec=True):
-        calls.append((subcommand, name))
-        if subcommand == "recover-account" and len(calls) == 1:
+    monkeypatch.setattr(apply_module, "_kanidmd_admin", fake_admin)
+    assert apply_module.recover_account("idm_admin") == "generated-modern-password"
+
+
+def test_recover_account_retries_legacy_with_disable(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, str, bool]] = []
+
+    def fake_admin(name: str, subcommand: str, *, scripting=False, use_exec=True):
+        calls.append((subcommand, name, scripting))
+        if scripting:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="unsupported")
+        legacy_recover_count = sum(
+            command == "recover-account" and not scripted
+            for command, _, scripted in calls
+        )
+        if subcommand == "recover-account" and legacy_recover_count == 1:
             return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="schema error")
         if subcommand == "disable-account":
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         if subcommand == "recover-account":
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='new_password: "generated-legacy-password"\n',
+                stderr="",
+            )
         return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
     monkeypatch.setattr(apply_module, "_kanidmd_admin", fake_admin)
-    apply_module.recover_account("idm_admin", "secret-pass")
+    assert apply_module.recover_account("idm_admin") == "generated-legacy-password"
     assert calls == [
-        ("recover-account", "idm_admin"),
-        ("disable-account", "idm_admin"),
-        ("recover-account", "idm_admin"),
+        ("recover-account", "idm_admin", True),
+        ("recover-account", "idm_admin", False),
+        ("disable-account", "idm_admin", False),
+        ("recover-account", "idm_admin", False),
     ]

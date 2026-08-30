@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -513,12 +514,17 @@ def _kanidmd_admin(
     name: str,
     subcommand: str,
     *,
-    password: str | None = None,
+    scripting: bool = False,
     use_exec: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     config = load_config()
     image = f"{config['kanidm'].get('image', 'docker.io/kanidm/server')}:{config['kanidm'].get('tag', DEFAULT_KANIDM_TAG)}"
-    base_cmd = ["kanidmd", subcommand, name, "-c", "/data/server.toml"]
+    base_cmd = ["kanidmd"]
+    if scripting:
+        base_cmd.append("scripting")
+    base_cmd.extend([subcommand, name])
+    if not scripting:
+        base_cmd.extend(["-c", "/data/server.toml"])
     if use_exec:
         cmd = ["docker", "exec", "-i", "kanidm", *base_cmd]
     else:
@@ -532,38 +538,72 @@ def _kanidmd_admin(
             image,
             *base_cmd,
         ]
-    input_text = f"{password}\n{password}\n" if password else None
     return subprocess.run(
         cmd,
-        input=input_text,
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-def recover_account(name: str, password: str) -> None:
-    """Reset a break-glass account password (idm_admin / admin service account)."""
-    result = _kanidmd_admin(name, "recover-account", password=password, use_exec=True)
+def recovered_password(result: subprocess.CompletedProcess[str]) -> str:
+    output = f"{result.stdout}\n{result.stderr}"
+    for line in output.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and str(value.get("output") or "").strip():
+            return str(value["output"]).strip()
+    match = re.search(r'new_password:\s*"([^"]+)"', output)
+    return match.group(1) if match else ""
+
+
+def recover_account(name: str) -> str:
+    """Recover a break-glass account and return Kanidm's generated password."""
+    # Kanidm 1.11+ uses the machine-readable scripting interface.
+    result = _kanidmd_admin(name, "recover-account", scripting=True, use_exec=True)
     if result.returncode == 0:
-        return
+        generated = recovered_password(result)
+        if generated:
+            return generated
+        raise RuntimeError(
+            f"Kanidm recovered {name!r} but its generated password could not be parsed:\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
 
     detail = (result.stderr or result.stdout or "").strip()
+    # Kanidm <= 1.8 uses the legacy command.
+    result = _kanidmd_admin(name, "recover-account", use_exec=True)
+    if result.returncode == 0:
+        generated = recovered_password(result)
+        if generated:
+            return generated
+        raise RuntimeError(
+            f"Kanidm recovered {name!r} but its generated password could not be parsed:\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
+    detail = (result.stderr or result.stdout or detail).strip()
+
     # Kanidm 1.7.3: repeat recover-account can duplicate account_valid_from; the
     # release notes say to disable then recover when recover fails.
     disable = _kanidmd_admin(name, "disable-account", use_exec=True)
     if disable.returncode == 0:
-        retry = _kanidmd_admin(name, "recover-account", password=password, use_exec=True)
+        retry = _kanidmd_admin(name, "recover-account", use_exec=True)
         if retry.returncode == 0:
-            return
+            generated = recovered_password(retry)
+            if generated:
+                return generated
         detail = (retry.stderr or retry.stdout or detail).strip()
 
-    fallback = _kanidmd_admin(name, "recover-account", password=password, use_exec=False)
+    fallback = _kanidmd_admin(name, "recover-account", use_exec=False)
     if fallback.returncode != 0:
         if _kanidmd_admin(name, "disable-account", use_exec=False).returncode == 0:
-            fallback = _kanidmd_admin(name, "recover-account", password=password, use_exec=False)
+            fallback = _kanidmd_admin(name, "recover-account", use_exec=False)
     if fallback.returncode == 0:
-        return
+        generated = recovered_password(fallback)
+        if generated:
+            return generated
 
     raise RuntimeError(
         f"Failed to recover Kanidm account {name!r}:\n{detail}\n{fallback.stderr or fallback.stdout}"
@@ -581,25 +621,32 @@ def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
     return kanidm_cli("login", "--name", "idm_admin", password=password)
 
 
-def ensure_idm_admin_login(password: str) -> bool:
+def ensure_idm_admin_login(password: str) -> str:
     """Login with the configured secret, recovering only on a fresh/stale account."""
     login = login_idm_admin(password)
     if login.returncode == 0:
-        return True
+        return password
     try:
-        recover_account("idm_admin", password)
+        generated_password = recover_account("idm_admin")
     except RuntimeError as exc:
         print(f"Warning: could not recover idm_admin: {exc}", file=sys.stderr)
-        return False
-    retry = login_idm_admin(password)
+        return ""
+
+    secrets_data = load_yaml(SECRETS_PATH)
+    secrets_data["IDM_ADMIN_PASSWORD"] = generated_password
+    save_yaml(SECRETS_PATH, secrets_data)
+    SECRETS_PATH.chmod(0o600)
+
+    retry = login_idm_admin(generated_password)
     if retry.returncode == 0:
-        return True
+        print("Updated IDM_ADMIN_PASSWORD in secrets.yaml after Kanidm recovery.")
+        return generated_password
     print(
         "Warning: kanidm CLI login as idm_admin failed. "
         f"{(retry.stderr or retry.stdout or '').strip()[:400]}",
         file=sys.stderr,
     )
-    return False
+    return ""
 
 
 def credential_status(username: str) -> subprocess.CompletedProcess[str]:
@@ -659,14 +706,17 @@ def save_enrollment_links(links: dict[str, str], credentialed: set[str]) -> None
 def bootstrap_identity(config: dict, secrets: dict) -> None:
     """Create the first person, groups, OIDC clients, and LDAP token."""
     print("Bootstrapping Kanidm identity (idm_admin, groups, OIDC, LDAP)…")
-    if not ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"]):
+    idm_admin_password = ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"])
+    if not idm_admin_password:
         raise RuntimeError(
             "Kanidm bootstrap cannot authenticate as idm_admin; refusing to "
             "report a partially configured deployment.\n"
-            "Recover manually:\n"
-            "  docker exec -i kanidm kanidmd disable-account idm_admin -c /data/server.toml\n"
-            "  docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml"
+            "For Kanidm 1.11+, recover manually with:\n"
+            "  docker exec kanidm kanidmd scripting recover-account idm_admin\n"
+            "Then copy the generated password into IDM_ADMIN_PASSWORD in "
+            ".kanidm-easy-deploy/secrets.yaml."
         )
+    secrets["IDM_ADMIN_PASSWORD"] = idm_admin_password
 
     for group in configured_groups(config):
         created = kanidm_cli("group", "create", group)
