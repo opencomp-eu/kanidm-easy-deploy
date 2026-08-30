@@ -12,12 +12,14 @@ from scripts.apply import (
     COMPOSE_PROJECT_NAME,
     build_client_toml,
     build_server_toml,
+    cli_exists,
     cli_json_field,
     cli_ok,
     configured_groups,
     create_enrollment_link,
     derive_compose_files,
     ensure_kanidm_cli_state,
+    ensure_ldap_token,
     kanidm_client_config_path,
     kanidm_issuer_url,
     kanidm_origin,
@@ -26,6 +28,7 @@ from scripts.apply import (
     ldap_base_dn,
     merge_oidc_clients,
     oidc_clients,
+    parse_api_token,
     render_template,
     validate_config,
 )
@@ -169,6 +172,86 @@ def test_cli_ok_rejects_logged_error_with_zero_exit_code():
         stderr="2026-08-30 ERROR kanidm_cli: Item not found",
     )
     assert not cli_ok(result)
+
+
+def test_cli_exists_treats_nomatchingentries_as_missing():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr=(
+            "2026-08-30T14:19:15.455102Z ERROR kanidm_cli::serviceaccount: "
+            "Error generating service account api token -> "
+            'Http(404, Some(NoMatchingEntries), "6731ca60-d55d-409b-a5d3-87d3a8a693cb")'
+        ),
+    )
+    assert not cli_exists(result)
+    assert not cli_ok(result)
+
+
+def test_cli_exists_accepts_existing_entry():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="name: stalwart-ldap\nclass: service_account\n",
+        stderr="",
+    )
+    assert cli_exists(result)
+
+
+def test_parse_api_token_from_json_result():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{"status":"Success","result":"ldap-token-value"}\n',
+        stderr="",
+    )
+    assert parse_api_token(result) == "ldap-token-value"
+
+
+def test_ensure_ldap_token_creates_missing_account_before_generate(monkeypatch, tmp_path):
+    from scripts import apply as apply_module
+
+    secrets_path = tmp_path / "secrets.yaml"
+    monkeypatch.setattr(apply_module, "SECRETS_PATH", secrets_path)
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        joined = " ".join(args)
+        if "service-account" in args and "get" in args:
+            if any(call[:3] == ("service-account", "create", "stalwart-ldap") for call in calls):
+                return subprocess.CompletedProcess(
+                    args=args, returncode=0, stdout="name: stalwart-ldap\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="",
+                stderr="ERROR kanidm_cli::serviceaccount: Http(404, Some(NoMatchingEntries), \"abc\")",
+            )
+        if "service-account" in args and "create" in args:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if "api-token" in args and "generate" in args:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"status":"Success","result":"generated-ldap-token"}\n',
+                stderr="",
+            )
+        raise AssertionError(f"unexpected kanidm_cli call: {joined}")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    secrets: dict[str, str] = {}
+    ensure_ldap_token(secrets)
+    assert secrets["LDAP_TOKEN"] == "generated-ldap-token"
+    assert ("service-account", "create", "stalwart-ldap", "Stalwart LDAP", "idm_admins") in [
+        call[:5] for call in calls
+    ]
+    generate = next(call for call in calls if "generate" in call)
+    assert generate[:3] == ("-o", "json", "service-account") or generate[0:2] == ("-o", "json")
+    assert "stalwart-ldap" in generate
+    assert yaml.safe_load(secrets_path.read_text())["LDAP_TOKEN"] == "generated-ldap-token"
 
 
 def test_cli_ok_accepts_expected_idempotency_error():

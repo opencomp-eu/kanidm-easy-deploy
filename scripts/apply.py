@@ -610,14 +610,33 @@ def recover_account(name: str) -> str:
     )
 
 
+def cli_output(result: subprocess.CompletedProcess[str]) -> str:
+    return f"{result.stdout or ''}\n{result.stderr or ''}"
+
+
 def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool:
-    combined = f"{result.stdout}\n{result.stderr}".lower()
+    combined = cli_output(result).lower()
     if any(fragment in combined for fragment in ok_fragments):
         return True
     # Some Kanidm CLI commands historically return exit code 0 even when the
     # operation failed. Treat logged errors as failures too.
-    has_logged_error = bool(re.search(r"(?m)\bERROR\b", f"{result.stdout}\n{result.stderr}"))
+    has_logged_error = bool(re.search(r"(?m)\bERROR\b", cli_output(result)))
     return result.returncode == 0 and not has_logged_error
+
+
+def cli_exists(result: subprocess.CompletedProcess[str]) -> bool:
+    """True when a get/list command found an existing Kanidm entry."""
+    combined = cli_output(result).lower()
+    if any(
+        fragment in combined
+        for fragment in (
+            "nomatchingentries",
+            "item not found",
+            "no matching entries",
+        )
+    ):
+        return False
+    return cli_ok(result)
 
 
 def cli_json_field(result: subprocess.CompletedProcess[str], *fields: str) -> str:
@@ -782,12 +801,12 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
 
     for group in configured_groups(config):
         existing_group = kanidm_cli("group", "get", group, "--name", "idm_admin")
-        if not cli_ok(existing_group):
+        if not cli_exists(existing_group):
             created = kanidm_cli("group", "create", group, "--name", "idm_admin")
             if not cli_ok(created, "already exists", "duplicate", "attributeuniqueness"):
                 raise RuntimeError(
                     f"Could not create group {group!r}: "
-                    f"{(created.stderr or created.stdout or '').strip()[:500]}"
+                    f"{cli_output(created).strip()[:500]}"
                 )
 
     enrollment_links: dict[str, str] = {}
@@ -807,14 +826,14 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
                 file=sys.stderr,
             )
         existing_person = kanidm_cli("person", "get", username, "--name", "idm_admin")
-        if not cli_ok(existing_person):
+        if not cli_exists(existing_person):
             created = kanidm_cli(
                 "person", "create", username, display, "--name", "idm_admin"
             )
             if not cli_ok(created, "already exists", "duplicate", "attributeuniqueness"):
                 raise RuntimeError(
                     f"Could not create person {username!r}: "
-                    f"{(created.stderr or created.stdout or '').strip()[:500]}"
+                    f"{cli_output(created).strip()[:500]}"
                 )
         if email:
             kanidm_cli(
@@ -854,52 +873,72 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
     write_stalwart_identity_secrets(secrets)
 
 
+def parse_api_token(result: subprocess.CompletedProcess[str]) -> str:
+    secret = cli_json_field(result, "result", "token", "secret")
+    if secret:
+        return secret
+    # Compatibility with older Kanidm text output.
+    value = (result.stdout or "").strip().splitlines()
+    secret = next(
+        (
+            line.strip()
+            for line in reversed(value)
+            if line.strip()
+            and " " not in line.strip()
+            and not line.strip().startswith(("{", "}"))
+            and "success" not in line.lower()
+            and "displayed once" not in line.lower()
+        ),
+        "",
+    )
+    return secret
+
+
 def ensure_ldap_token(secrets: dict) -> None:
     if str(secrets.get("LDAP_TOKEN") or "").strip() and str(secrets.get("LDAP_TOKEN_CREATED") or ""):
         return
     existing = kanidm_cli(
         "service-account", "get", "stalwart-ldap", "--name", "idm_admin"
     )
-    if not cli_ok(existing):
+    if not cli_exists(existing):
         account = kanidm_cli(
             "service-account",
             "create",
             "stalwart-ldap",
             "Stalwart LDAP",
-            "idm_admin",
+            "idm_admins",
             "--name",
             "idm_admin",
         )
         if not cli_ok(account, "already exists", "duplicate", "attributeuniqueness"):
             raise RuntimeError(
                 "Could not create stalwart-ldap service account: "
-                f"{(account.stderr or account.stdout or '').strip()[:500]}"
+                f"{cli_output(account).strip()[:800]}"
+            )
+        existing = kanidm_cli(
+            "service-account", "get", "stalwart-ldap", "--name", "idm_admin"
+        )
+        if not cli_exists(existing):
+            raise RuntimeError(
+                "Created stalwart-ldap but it is still missing: "
+                f"{cli_output(existing).strip()[:800]}"
             )
     token = kanidm_cli(
-        "-o", "json", "service-account", "api-token", "generate",
+        "-o", "json",
+        "service-account", "api-token", "generate",
         "stalwart-ldap", "stalwart", "--name", "idm_admin",
     )
     if not cli_ok(token):
         raise RuntimeError(
             "Could not generate stalwart-ldap API token: "
-            f"{(token.stderr or token.stdout or '').strip()[:500]}"
+            f"{cli_output(token).strip()[:800]}"
         )
-    secret = cli_json_field(token, "result", "token", "secret")
+    secret = parse_api_token(token)
     if not secret:
-        # Compatibility with older Kanidm text output.
-        value = (token.stdout or "").strip().splitlines()
-        secret = next(
-            (
-                line.strip()
-                for line in reversed(value)
-                if line.strip()
-                and " " not in line.strip()
-                and not line.strip().startswith(("{", "}"))
-            ),
-            "",
+        raise RuntimeError(
+            "Kanidm generated an LDAP API token but its value could not be parsed:\n"
+            f"{cli_output(token).strip()[:800]}"
         )
-    if not secret:
-        raise RuntimeError("Kanidm generated an LDAP API token but its value could not be parsed")
     secrets["LDAP_TOKEN"] = secret
     secrets["LDAP_TOKEN_CREATED"] = "1"
     save_yaml(SECRETS_PATH, secrets)
@@ -932,7 +971,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
             continue
         public = to_bool(client.get("public"))
         existing = kanidm_cli("system", "oauth2", "get", client_id, "--name", "idm_admin")
-        if not cli_ok(existing):
+        if not cli_exists(existing):
             if public:
                 created = kanidm_cli(
                     "system", "oauth2", "create-public", client_id, name, landing,
