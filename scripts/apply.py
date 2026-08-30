@@ -1052,6 +1052,10 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 "system", "oauth2", "set-landing-url", client_id, landing,
                 "--name", "idm_admin",
             )
+            kanidm_cli(
+                "system", "oauth2", "set-displayname", client_id, name,
+                "--name", "idm_admin",
+            )
         for url in redirects:
             result = kanidm_cli(
                 "system", "oauth2", "add-redirect-url", client_id, url,
