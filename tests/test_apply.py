@@ -79,7 +79,9 @@ def test_build_server_toml_includes_ldap_and_origin():
     assert 'domain = "idm.test.example"' in text
     assert 'origin = "https://idm.test.example"' in text
     assert 'ldapbindaddress = "[::]:3636"' in text
-    assert "trust_x_forward_for = true" in text
+    assert "[http_client_address_info]" in text
+    assert 'x-forward-for = ["127.0.0.0/8", "172.16.0.0/12"]' in text
+    assert "trust_x_forward_for" not in text
 
 
 def test_build_client_toml_points_at_container():
@@ -132,6 +134,8 @@ def test_caddy_block_proxies_https_to_kanidm():
     assert "idm.test.example" in block
     assert "https://kanidm:8443" in block
     assert "tls_insecure_skip_verify" in block
+    assert "{remote_ip}" in block
+    assert "{remote_host}" not in block
 
 
 def test_render_template_requires_placeholders():

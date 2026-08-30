@@ -9,11 +9,11 @@ services:
     networks:
       - kanidm-net
     healthcheck:
-      test: ["CMD-SHELL", "kanidmd healthcheck || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 90s
+      test: ["CMD", "/sbin/kanidmd", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
   kanidm-cli:
     container_name: kanidm_cli

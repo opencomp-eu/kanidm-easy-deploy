@@ -255,8 +255,11 @@ def build_server_toml(config: dict) -> str:
         'tls_key = "/data/key.pem"',
         f'domain = "{domain}"',
         f'origin = "{origin}"',
-        "trust_x_forward_for = true",
         'log_level = "info"',
+        "",
+        "# Caddy (easydeploy-net) and other Docker bridges send X-Forwarded-For.",
+        "[http_client_address_info]",
+        'x-forward-for = ["127.0.0.0/8", "172.16.0.0/12"]',
     ]
     if ldap_bind:
         lines.append(f'ldapbindaddress = "{ldap_bind}"')
@@ -301,6 +304,7 @@ def generate_tls_material(data_dir: Path, domain: str) -> None:
         capture_output=True,
     )
     key.chmod(0o600)
+    chain.chmod(0o644)
 
 
 def kanidm_portal_caddy_block(domain: str) -> str:
@@ -313,7 +317,7 @@ def kanidm_portal_caddy_block(domain: str) -> str:
         header_up Host {{host}}
         header_up X-Forwarded-Host {{host}}
         header_up X-Forwarded-Proto {{scheme}}
-        header_up X-Forwarded-For {{remote_host}}
+        header_up X-Forwarded-For {{remote_ip}}
     }}
     encode gzip
     log
