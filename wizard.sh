@@ -55,7 +55,7 @@ print_banner() {
 
 gather_config() {
 	local domain data_dir
-	local admin_username admin_display_name admin_email admin_password
+	local admin_username admin_display_name admin_email
 	local proceed proxy_mode
 	local base_domain
 
@@ -74,7 +74,7 @@ gather_config() {
 	ask admin_username "Username" "operator"
 	ask admin_display_name "Display name" "Admin"
 	ask admin_email "Email" "admin@${base_domain}"
-	ask_secret admin_password "Password (leave empty to auto-generate on apply)"
+	echo "  A one-time enrollment link will be printed after deployment."
 
 	echo
 	echo -e "${BOLD}  Reverse proxy${RESET}"
@@ -123,7 +123,7 @@ update_from_wizard(
     admin_username=${admin_username@Q},
     admin_display_name=${admin_display_name@Q},
     admin_email=${admin_email@Q},
-    admin_password=${admin_password@Q} or None,
+    admin_password=None,
     proxy_mode=${proxy_mode@Q},
     path=Path(${DEPLOY_YAML@Q}),
 )

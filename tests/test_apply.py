@@ -13,6 +13,7 @@ from scripts.apply import (
     build_client_toml,
     build_server_toml,
     configured_groups,
+    create_enrollment_link,
     derive_compose_files,
     ensure_kanidm_cli_state,
     kanidm_client_config_path,
@@ -95,7 +96,14 @@ def test_build_client_toml_points_at_container():
 def test_kanidm_cli_state_files(tmp_path: Path):
     ensure_kanidm_cli_state(tmp_path)
     assert kanidm_tokens_path(tmp_path).is_file()
+    assert kanidm_tokens_path(tmp_path).read_text() == '{"instances": {}}\n'
     assert kanidm_client_config_path(tmp_path).name == "kanidm-client-config"
+
+
+def test_kanidm_cli_state_repairs_old_empty_object(tmp_path: Path):
+    kanidm_tokens_path(tmp_path).write_text("{}\n")
+    ensure_kanidm_cli_state(tmp_path)
+    assert kanidm_tokens_path(tmp_path).read_text() == '{"instances": {}}\n'
 
 
 def test_derive_compose_files_integrate():
@@ -149,6 +157,36 @@ def test_caddy_block_proxies_https_to_kanidm():
 def test_render_template_requires_placeholders():
     with pytest.raises(ValueError, match="Unresolved"):
         render_template("{{MISSING}}", {})
+
+
+def test_validate_config_rejects_reserved_person_name():
+    with pytest.raises(ValueError, match="reserved"):
+        validate_config(
+            _base_config(
+                users=[
+                    {
+                        "username": "admin",
+                        "display_name": "Admin",
+                        "email": "admin@test.example",
+                    }
+                ]
+            )
+        )
+
+
+def test_create_enrollment_link_uses_public_origin(monkeypatch):
+    from scripts import apply as apply_module
+
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="This link: https://kanidm:8443/ui/reset?token=abc\n",
+        stderr="",
+    )
+    monkeypatch.setattr(apply_module, "kanidm_cli", lambda *args: result)
+    assert create_enrollment_link("alice", "auth.example.com") == (
+        "https://auth.example.com/ui/reset?token=abc"
+    )
 
 
 def test_kanidm_cli_uses_password_env(monkeypatch):

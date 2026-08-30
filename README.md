@@ -46,13 +46,17 @@ Pin the Kanidm image tag in `deploy.yaml` (`kanidm.tag`) instead of floating `la
 
 On first apply the kit:
 
-1. Recovers the built-in `idm_admin` account (and optionally the `admin` service account). On Kanidm 1.7.3, if recover fails after a previous attempt, apply runs `disable-account` then `recover-account` automatically.
-2. Creates the initial person from `users:` (POSIX-enabled so LDAP bind works).
+1. Authenticates the built-in `idm_admin` account, recovering it only when needed. On Kanidm 1.7.3, if recovery fails after a previous attempt, apply runs `disable-account` then `recover-account` automatically.
+2. Creates the initial person from `users:` and prints a one-time credential enrollment link. Open that link to set the person's web/OIDC password and optional MFA.
 3. Creates the groups listed in `groups:` and memberships on that person.
 4. Registers OAuth2/OIDC clients from `oidc.clients` and engine sidecars.
 5. Creates a `stalwart-ldap` service account and API token for directory search.
 
 After that, manage people and groups **in Kanidm**, not in OpenCloud, Matrix, or Stalwart.
+
+`person posix set-password` only sets a Unix/LDAP password; it does **not**
+create a web-login credential. Easy Deploy instead uses Kanidm's supported
+credential enrollment/reset links.
 
 ### Protocols
 
@@ -69,6 +73,8 @@ Kanidm OIDC issuers are **per client**. OpenCloud uses `/oauth2/openid/opencloud
 bash apply.sh              # re-render config and reconcile stack
 bash apply.sh --skip-runtime   # render only, no docker
 bash kanidm-cli.sh login --name idm_admin   # CLI admin (after apply)
+bash user.sh create alice "Alice Example" --email alice@example.com
+bash user.sh reset alice   # issue a new one-time credential reset link
 bash start.sh              # compose up (via apply, skip pull)
 bash stop.sh               # compose down
 ```

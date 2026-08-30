@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import shutil
@@ -122,6 +123,13 @@ def validate_config(config: dict) -> None:
     users = config.get("users") or []
     if not isinstance(users, list) or not users:
         raise ValueError("users must contain at least one person for first-boot bootstrap")
+    for user in users:
+        username = str((user or {}).get("username") or "").strip().lower()
+        if username in {"admin", "idm_admin"}:
+            raise ValueError(
+                f"users username {username!r} is reserved by Kanidm; "
+                "choose a person username such as 'operator'"
+            )
 
     proxy_mode(config)
 
@@ -285,8 +293,15 @@ def kanidm_tokens_path(data_dir: Path) -> Path:
 
 def ensure_kanidm_cli_state(data_dir: Path) -> None:
     tokens = kanidm_tokens_path(data_dir)
-    if not tokens.is_file():
-        tokens.write_text("{}\n")
+    reset_tokens = not tokens.is_file()
+    if tokens.is_file():
+        try:
+            token_data = json.loads(tokens.read_text() or "{}")
+            reset_tokens = not isinstance(token_data.get("instances"), dict)
+        except (json.JSONDecodeError, AttributeError):
+            reset_tokens = True
+    if reset_tokens:
+        tokens.write_text('{"instances": {}}\n')
     tokens.chmod(0o600)
 
 
@@ -562,13 +577,89 @@ def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool
     return any(fragment in combined for fragment in ok_fragments)
 
 
+def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
+    return kanidm_cli("login", "--name", "idm_admin", password=password)
+
+
+def ensure_idm_admin_login(password: str) -> bool:
+    """Login with the configured secret, recovering only on a fresh/stale account."""
+    login = login_idm_admin(password)
+    if login.returncode == 0:
+        return True
+    try:
+        recover_account("idm_admin", password)
+    except RuntimeError as exc:
+        print(f"Warning: could not recover idm_admin: {exc}", file=sys.stderr)
+        return False
+    retry = login_idm_admin(password)
+    if retry.returncode == 0:
+        return True
+    print(
+        "Warning: kanidm CLI login as idm_admin failed. "
+        f"{(retry.stderr or retry.stdout or '').strip()[:400]}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def credential_status(username: str) -> subprocess.CompletedProcess[str]:
+    return kanidm_cli("person", "credential", "status", username)
+
+
+def create_enrollment_link(username: str, domain: str) -> str:
+    """Create a one-day web enrollment link for a person without credentials."""
+    result = kanidm_cli(
+        "person",
+        "credential",
+        "create-reset-token",
+        username,
+        "--ttl",
+        "86400",
+    )
+    if result.returncode != 0:
+        # Kanidm 1.7 accepted TTL as a positional argument.
+        result = kanidm_cli("person", "credential", "create-reset-token", username, "86400")
+    if result.returncode != 0:
+        print(
+            f"Warning: could not create enrollment link for {username!r}: "
+            f"{(result.stderr or result.stdout or '').strip()[:300]}",
+            file=sys.stderr,
+        )
+        return ""
+    output = f"{result.stdout}\n{result.stderr}"
+    link = next(
+        (
+            line.split("This link:", 1)[1].strip()
+            for line in output.splitlines()
+            if "This link:" in line
+        ),
+        "",
+    )
+    if link:
+        # The CLI connects on the internal Docker hostname, but users need the
+        # public origin in the enrollment URL.
+        link = link.replace("https://kanidm:8443", kanidm_origin(domain))
+    return link
+
+
+def save_enrollment_links(links: dict[str, str], credentialed: set[str]) -> None:
+    path = STATE_DIR / "enrollment-links.yaml"
+    existing = load_yaml(path) if path.is_file() else {}
+    for username in credentialed:
+        existing.pop(username, None)
+    existing.update(links)
+    if not existing:
+        if path.is_file():
+            path.unlink()
+        return
+    save_yaml(path, existing)
+    path.chmod(0o600)
+
+
 def bootstrap_identity(config: dict, secrets: dict) -> None:
     """Create the first person, groups, OIDC clients, and LDAP token."""
     print("Bootstrapping Kanidm identity (idm_admin, groups, OIDC, LDAP)…")
-    try:
-        recover_account("idm_admin", secrets["IDM_ADMIN_PASSWORD"])
-    except RuntimeError as exc:
-        print(f"Warning: could not recover idm_admin: {exc}", file=sys.stderr)
+    if not ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"]):
         print(
             "Recover manually:\n"
             "  docker exec -i kanidm kanidmd disable-account idm_admin -c /data/server.toml\n"
@@ -577,31 +668,13 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
         )
         return
 
-    # Optional: Kanidm server-config service account (not the person in deploy.yaml).
-    try:
-        recover_account("admin", secrets["ADMIN_PASSWORD"])
-    except RuntimeError:
-        print(
-            "Warning: recover-account for service account 'admin' failed (optional). "
-            "Use idm_admin for the web UI and person accounts for apps.",
-            file=sys.stderr,
-        )
-
-    login = kanidm_cli("login", "--name", "idm_admin", password=secrets["IDM_ADMIN_PASSWORD"])
-    if login.returncode != 0:
-        print(
-            "Warning: kanidm CLI login as idm_admin failed. "
-            f"{(login.stderr or login.stdout or '').strip()[:400]}",
-            file=sys.stderr,
-        )
-        print("Create people, groups, and OAuth2 clients with the Kanidm CLI after the portal is up.", file=sys.stderr)
-        return
-
     for group in configured_groups(config):
         created = kanidm_cli("group", "create", group)
         if not cli_ok(created, "already exists", "duplicate"):
             print(f"Warning: could not create group {group!r}: {(created.stderr or created.stdout or '')[:200]}", file=sys.stderr)
 
+    enrollment_links: dict[str, str] = {}
+    credentialed: set[str] = set()
     for user in config.get("users") or []:
         if not isinstance(user, dict):
             continue
@@ -610,26 +683,40 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             continue
         display = str(user.get("display_name") or username)
         email = str(user.get("email") or "")
+        if str(user.get("password") or "").strip():
+            print(
+                f"Note: users[{username!r}].password is not applied to web login. "
+                "Use the enrollment link printed below.",
+                file=sys.stderr,
+            )
         created = kanidm_cli("person", "create", username, display)
         if not cli_ok(created, "already exists", "duplicate"):
             print(f"Warning: could not create person {username!r}: {(created.stderr or created.stdout or '')[:200]}", file=sys.stderr)
         if email:
             kanidm_cli("person", "update", username, "--mail", email)
-        password = str(user.get("password") or "").strip() or secrets["ADMIN_PASSWORD"]
         kanidm_cli("person", "posix", "set", username)
-        kanidm_cli(
-            "person",
-            "posix",
-            "set-password",
-            username,
-            "--name",
-            "idm_admin",
-            password=password,
-        )
         for group in user.get("groups") or []:
             name = str(group or "").strip()
             if name:
                 kanidm_cli("group", "add-members", name, username)
+        status = credential_status(username)
+        if status.returncode != 0 or "no credentials" in f"{status.stdout}\n{status.stderr}".lower():
+            link = create_enrollment_link(username, str(config["kanidm"]["domain"]))
+            if link:
+                enrollment_links[username] = link
+        else:
+            credentialed.add(username)
+
+    # Let LDAP/Unix authentication use the person's primary password when no
+    # separate POSIX password exists.
+    kanidm_cli(
+        "group",
+        "account-policy",
+        "allow-primary-cred-fallback",
+        "mail-users",
+        "true",
+    )
+    save_enrollment_links(enrollment_links, credentialed)
 
     kanidm_cli("system", "domain", "set-ldap-allow-unix-password-bind", "true")
     ensure_ldap_token(secrets)
@@ -749,7 +836,7 @@ def kanidm_container_health() -> str:
 
 def kanidm_healthcheck_ok() -> bool:
     result = subprocess.run(
-        ["docker", "exec", "kanidm", "/sbin/kanidmd", "healthcheck", "-c", "/data/server.toml"],
+        ["docker", "exec", "kanidm", "/sbin/kanidmd", "healthcheck"],
         capture_output=True,
         text=True,
         check=False,
@@ -869,8 +956,12 @@ def print_summary(config: dict, secrets: dict) -> None:
     print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}  (web UI / CLI admin)")
     admin = (config.get("users") or [{}])[0]
     username = admin.get("username", "operator")
-    person_password = str(admin.get("password") or "").strip() or secrets.get("ADMIN_PASSWORD")
-    print(f"Person account:  {username} / {person_password} (portal + apps)")
+    print(f"Person account:  {username} (portal + apps)")
+    enrollment_path = STATE_DIR / "enrollment-links.yaml"
+    if enrollment_path.is_file():
+        links = load_yaml(enrollment_path)
+        if links.get(username):
+            print(f"Enrollment link: {links[username]}")
     print("  idm_admin is for break-glass admin only; use the person account above for daily login.")
     clients = oidc_clients(config)
     if clients:
