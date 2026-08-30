@@ -622,17 +622,60 @@ def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool
 
 def cli_json_field(result: subprocess.CompletedProcess[str], *fields: str) -> str:
     """Extract a string field from Kanidm JSON output."""
-    for line in (result.stdout or "").splitlines():
+    output = result.stdout or ""
+
+    def find_field(value: Any) -> str:
+        if isinstance(value, dict):
+            for field in fields:
+                field_value = value.get(field)
+                if isinstance(field_value, str) and field_value.strip():
+                    return field_value.strip()
+                if field_value is not None:
+                    nested = find_field(field_value)
+                    if nested:
+                        return nested
+            for nested_value in value.values():
+                nested = find_field(nested_value)
+                if nested:
+                    return nested
+        elif isinstance(value, list):
+            for item in value:
+                nested = find_field(item)
+                if nested:
+                    return nested
+        return ""
+
+    # Kanidm 1.11 emits pretty-printed, multi-line JSON.
+    try:
+        parsed = json.loads(output.strip())
+    except json.JSONDecodeError:
+        parsed = None
+    if parsed is not None:
+        value = find_field(parsed)
+        if value:
+            return value
+
+    # Retain support for one JSON object per output line.
+    for line in output.splitlines():
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(value, dict):
-            continue
-        for field in fields:
-            field_value = value.get(field)
-            if isinstance(field_value, str) and field_value.strip():
-                return field_value.strip()
+        found = find_field(value)
+        if found:
+            return found
+
+    # Last resort for JSON mixed with non-JSON diagnostic lines.
+    for field in fields:
+        match = re.search(
+            rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+            output,
+        )
+        if match:
+            try:
+                return json.loads(f'"{match.group(1)}"')
+            except json.JSONDecodeError:
+                return match.group(1)
     return ""
 
 

@@ -191,6 +191,16 @@ def test_cli_json_field_parses_api_token_result():
     assert cli_json_field(result, "result", "token") == "token-value"
 
 
+def test_cli_json_field_parses_multiline_nested_result():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{\n  "status": "Success",\n  "result": {\n    "token": "nested-token"\n  }\n}\n',
+        stderr="",
+    )
+    assert cli_json_field(result, "result", "token") == "nested-token"
+
+
 def test_cli_json_field_parses_oauth_secret():
     result = subprocess.CompletedProcess(
         args=[],
