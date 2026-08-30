@@ -455,53 +455,65 @@ def kanidm_cli(*args: str, input_text: str | None = None) -> subprocess.Complete
     )
 
 
-def recover_account(name: str, password: str) -> None:
+def _kanidmd_admin(
+    name: str,
+    subcommand: str,
+    *,
+    password: str | None = None,
+    use_exec: bool = True,
+) -> subprocess.CompletedProcess[str]:
     config = load_config()
     image = f"{config['kanidm'].get('image', 'docker.io/kanidm/server')}:{config['kanidm'].get('tag', '1.7.3')}"
-    result = subprocess.run(
-        [
+    base_cmd = ["kanidmd", subcommand, name, "-c", "/data/server.toml"]
+    if use_exec:
+        cmd = ["docker", "exec", "-i", "kanidm", *base_cmd]
+    else:
+        cmd = [
             "docker",
-            "exec",
+            "run",
+            "--rm",
             "-i",
-            "kanidm",
-            "kanidmd",
-            "recover-account",
-            name,
-            "-c",
-            "/data/server.toml",
-        ],
-        input=f"{password}\n{password}\n",
+            "-v",
+            f"{config['kanidm']['data_dir']}:/data",
+            image,
+            *base_cmd,
+        ]
+    input_text = f"{password}\n{password}\n" if password else None
+    return subprocess.run(
+        cmd,
+        input=input_text,
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        # recover-account may prompt differently; try the image directly as fallback.
-        fallback = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "-i",
-                "-v",
-                f"{config['kanidm']['data_dir']}:/data",
-                image,
-                "kanidmd",
-                "recover-account",
-                name,
-                "-c",
-                "/data/server.toml",
-            ],
-            input=f"{password}\n{password}\n",
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if fallback.returncode != 0:
-            raise RuntimeError(
-                f"Failed to recover Kanidm account {name!r}:\n{detail}\n{fallback.stderr or fallback.stdout}"
-            )
+
+
+def recover_account(name: str, password: str) -> None:
+    """Reset a break-glass account password (idm_admin / admin service account)."""
+    result = _kanidmd_admin(name, "recover-account", password=password, use_exec=True)
+    if result.returncode == 0:
+        return
+
+    detail = (result.stderr or result.stdout or "").strip()
+    # Kanidm 1.7.3: repeat recover-account can duplicate account_valid_from; the
+    # release notes say to disable then recover when recover fails.
+    disable = _kanidmd_admin(name, "disable-account", use_exec=True)
+    if disable.returncode == 0:
+        retry = _kanidmd_admin(name, "recover-account", password=password, use_exec=True)
+        if retry.returncode == 0:
+            return
+        detail = (retry.stderr or retry.stdout or detail).strip()
+
+    fallback = _kanidmd_admin(name, "recover-account", password=password, use_exec=False)
+    if fallback.returncode != 0:
+        if _kanidmd_admin(name, "disable-account", use_exec=False).returncode == 0:
+            fallback = _kanidmd_admin(name, "recover-account", password=password, use_exec=False)
+    if fallback.returncode == 0:
+        return
+
+    raise RuntimeError(
+        f"Failed to recover Kanidm account {name!r}:\n{detail}\n{fallback.stderr or fallback.stdout}"
+    )
 
 
 def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool:
@@ -519,7 +531,9 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
     except RuntimeError as exc:
         print(f"Warning: could not recover idm_admin: {exc}", file=sys.stderr)
         print(
-            "Recover manually: docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml",
+            "Recover manually:\n"
+            "  docker exec -i kanidm kanidmd disable-account idm_admin -c /data/server.toml\n"
+            "  docker exec -i kanidm kanidmd recover-account idm_admin -c /data/server.toml",
             file=sys.stderr,
         )
         return

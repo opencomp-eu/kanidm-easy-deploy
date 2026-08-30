@@ -46,7 +46,7 @@ Pin the Kanidm image tag in `deploy.yaml` (`kanidm.tag`) instead of floating `la
 
 On first apply the kit:
 
-1. Recovers the built-in `idm_admin` and `admin` accounts.
+1. Recovers the built-in `idm_admin` account (and optionally the `admin` service account). On Kanidm 1.7.3, if recover fails after a previous attempt, apply runs `disable-account` then `recover-account` automatically.
 2. Creates the initial person from `users:` (POSIX-enabled so LDAP bind works).
 3. Creates the groups listed in `groups:` and memberships on that person.
 4. Registers OAuth2/OIDC clients from `oidc.clients` and engine sidecars.

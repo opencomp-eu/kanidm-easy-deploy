@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -139,3 +140,27 @@ def test_caddy_block_proxies_https_to_kanidm():
 def test_render_template_requires_placeholders():
     with pytest.raises(ValueError, match="Unresolved"):
         render_template("{{MISSING}}", {})
+
+
+def test_recover_account_retries_with_disable(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_admin(name: str, subcommand: str, *, password=None, use_exec=True):
+        calls.append((subcommand, name))
+        if subcommand == "recover-account" and len(calls) == 1:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="schema error")
+        if subcommand == "disable-account":
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        if subcommand == "recover-account":
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "_kanidmd_admin", fake_admin)
+    apply_module.recover_account("idm_admin", "secret-pass")
+    assert calls == [
+        ("recover-account", "idm_admin"),
+        ("disable-account", "idm_admin"),
+        ("recover-account", "idm_admin"),
+    ]
