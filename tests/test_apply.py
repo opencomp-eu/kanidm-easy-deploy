@@ -616,6 +616,21 @@ def test_discover_favicon_urls_includes_origin_candidates():
     assert "https://cloud.example.com/favicon.ico" in urls
 
 
+def test_resolve_image_source_skips_ico_downloads(tmp_path: Path, monkeypatch):
+    from scripts import apply as apply_module
+
+    branding_dir = tmp_path / "branding"
+    branding_dir.mkdir()
+    monkeypatch.setattr(apply_module, "BRANDING_DIR", branding_dir)
+
+    def fake_download(url: str, dest: Path, *, max_bytes: int = 0) -> None:
+        dest.write_bytes(b"\x00\x00\x01\x00" + b"\x00" * 16)
+
+    monkeypatch.setattr(apply_module, "_download_url", fake_download)
+    with pytest.raises(ValueError, match="ICO favicons are not supported"):
+        resolve_image_source("https://matrix.example.com/favicon.ico", cache_name="matrix-ico")
+
+
 def test_resolve_oauth2_client_image_honours_explicit_path(tmp_path: Path, monkeypatch):
     from scripts import apply as apply_module
 

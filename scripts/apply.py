@@ -291,8 +291,9 @@ def resolve_image_source(source: str, *, cache_name: str) -> Path:
         _download_url(value, temp)
         content = temp.read_bytes()
         ext = _guess_extension(value, content)
+        # Kanidm does not accept ICO; skip and let the caller try the next URL.
         if ext == "ico":
-            ext = "png"
+            raise ValueError(f"ICO favicons are not supported by Kanidm: {value}")
         if ext not in SUPPORTED_BRANDING_IMAGE_TYPES:
             raise ValueError(f"Unsupported downloaded image type from {value!r}")
         dest = cache_base.with_suffix(f".{ext}")
