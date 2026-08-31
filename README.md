@@ -83,7 +83,7 @@ branding:
 - Set `logo: false` to leave the portal image unchanged.
 - OAuth2 application icons are fetched from each client's `landing_url` by default. Override per client with `oidc.clients[].image`, or disable with `oauth2_icons: false`.
 
-Images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kanidm's limit).
+Images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kanidm's limit). Portal branding uses Kanidm's `admin` account (not `idm_admin`); `apply.sh` recovers and stores `ADMIN_PASSWORD` in secrets automatically.
 
 ## Day-to-day
 

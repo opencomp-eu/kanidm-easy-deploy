@@ -607,7 +607,7 @@ def test_apply_portal_branding_uses_defaults(monkeypatch):
     monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
     monkeypatch.setattr(apply_module, "set_kanidm_domain_image", lambda path: calls.append(("set-image", str(path))))
     apply_portal_branding(_base_config())
-    assert ("system", "domain", "set-displayname", "Test", "--name", "idm_admin") in calls
+    assert ("system", "domain", "set-displayname", "Test", "--name", "admin") in calls
     assert any(call[0] == "set-image" for call in calls)
 
 

@@ -416,7 +416,7 @@ def set_kanidm_domain_image(image_path: Path) -> None:
         container_path,
         image_type,
         "--name",
-        "idm_admin",
+        "admin",
         mounts=[(str(image_path.resolve()), f"{container_path}:ro")],
     )
     if not cli_ok(result):
@@ -463,7 +463,7 @@ def apply_portal_branding(config: dict) -> None:
         "set-displayname",
         display_name,
         "--name",
-        "idm_admin",
+        "admin",
     )
     if not cli_ok(named):
         raise RuntimeError(
@@ -1056,6 +1056,10 @@ def login_idm_admin(password: str) -> subprocess.CompletedProcess[str]:
     return kanidm_cli("login", "--name", "idm_admin", password=password)
 
 
+def login_admin(password: str) -> subprocess.CompletedProcess[str]:
+    return kanidm_cli("login", "--name", "admin", password=password)
+
+
 def ensure_idm_admin_login(password: str) -> str:
     """Login with the configured secret, recovering only on a fresh/stale account."""
     login = login_idm_admin(password)
@@ -1078,6 +1082,34 @@ def ensure_idm_admin_login(password: str) -> str:
         return generated_password
     print(
         "Warning: kanidm CLI login as idm_admin failed. "
+        f"{(retry.stderr or retry.stdout or '').strip()[:400]}",
+        file=sys.stderr,
+    )
+    return ""
+
+
+def ensure_admin_login(password: str) -> str:
+    """Login with the system admin account (required for domain branding)."""
+    login = login_admin(password)
+    if cli_ok(login):
+        return password
+    try:
+        generated_password = recover_account("admin")
+    except RuntimeError as exc:
+        print(f"Warning: could not recover admin: {exc}", file=sys.stderr)
+        return ""
+
+    secrets_data = load_yaml(SECRETS_PATH)
+    secrets_data["ADMIN_PASSWORD"] = generated_password
+    save_yaml(SECRETS_PATH, secrets_data)
+    SECRETS_PATH.chmod(0o600)
+
+    retry = login_admin(generated_password)
+    if cli_ok(retry):
+        print("Updated ADMIN_PASSWORD in secrets.yaml after Kanidm recovery.")
+        return generated_password
+    print(
+        "Warning: kanidm CLI login as admin failed. "
         f"{(retry.stderr or retry.stdout or '').strip()[:400]}",
         file=sys.stderr,
     )
@@ -1152,6 +1184,17 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             ".kanidm-easy-deploy/secrets.yaml."
         )
     secrets["IDM_ADMIN_PASSWORD"] = idm_admin_password
+    admin_password = ensure_admin_login(secrets["ADMIN_PASSWORD"])
+    if not admin_password:
+        raise RuntimeError(
+            "Kanidm bootstrap cannot authenticate as admin; portal branding "
+            "requires the system admin account.\n"
+            "For Kanidm 1.11+, recover manually with:\n"
+            "  docker exec kanidm kanidmd scripting recover-account admin\n"
+            "Then copy the generated password into ADMIN_PASSWORD in "
+            ".kanidm-easy-deploy/secrets.yaml."
+        )
+    secrets["ADMIN_PASSWORD"] = admin_password
     apply_portal_branding(config)
 
     for group in configured_groups(config):
@@ -1662,7 +1705,8 @@ def print_summary(config: dict, secrets: dict) -> None:
     print(f"LDAP:            ldaps://kanidm:3636  base {ldap_base_dn(domain)}")
     print(f"Data directory:  {kanidm['data_dir']}")
     print(f"Secrets file:    {SECRETS_PATH}")
-    print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}  (web UI / CLI admin)")
+    print(f"idm_admin pass:  {secrets.get('IDM_ADMIN_PASSWORD')}  (people/groups/OIDC)")
+    print(f"admin pass:      {secrets.get('ADMIN_PASSWORD')}  (domain branding)")
     admin = (config.get("users") or [{}])[0]
     username = admin.get("username", "operator")
     print(f"Person account:  {username} (portal + apps)")
