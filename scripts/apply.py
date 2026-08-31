@@ -1239,11 +1239,12 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             str(config["kanidm"]["domain"]),
         )
         if str(user.get("password") or "").strip():
-            print(
+            password_note = (
                 f"Note: users[{username!r}].password is not applied to web login. "
-                "Use the enrollment link printed below.",
-                file=sys.stderr,
+                "Kanidm uses a one-time enrollment link to set portal/OIDC credentials."
             )
+        else:
+            password_note = ""
         existing_person = kanidm_cli("person", "get", username, "--name", "idm_admin")
         if not cli_exists(existing_person):
             created = kanidm_cli(
@@ -1275,6 +1276,8 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
                 )
         status = credential_status(username)
         if not cli_ok(status) or "no credentials" in f"{status.stdout}\n{status.stderr}".lower():
+            if password_note:
+                print(password_note, file=sys.stderr)
             link = create_enrollment_link(username, str(config["kanidm"]["domain"]))
             if link:
                 enrollment_links[username] = link
