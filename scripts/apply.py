@@ -12,6 +12,10 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +37,10 @@ INTEGRATION_DIR = STATE_DIR / "integration"
 INTEGRATION_CADDY_FRAGMENT = INTEGRATION_DIR / "caddy.caddy"
 DEFAULT_INTEGRATE_NETWORK = "easydeploy-net"
 DEFAULT_KANIDM_TAG = "1.11.1"
+DEFAULT_LOGO_PATH = PROJECT_ROOT / "assets" / "branding" / "default-logo.svg"
+BRANDING_DIR = STATE_DIR / "branding"
+MAX_BRANDING_IMAGE_BYTES = 256 * 1024
+SUPPORTED_BRANDING_IMAGE_TYPES = frozenset({"png", "jpg", "jpeg", "gif", "svg", "webp"})
 KANIDM_CLIENT_CONFIG_BASENAME = "kanidm-client-config"
 KANIDM_TOKENS_BASENAME = "kanidm_tokens"
 
@@ -185,6 +193,313 @@ def person_mail_address(username: str, email: str, kanidm_domain: str) -> str:
     if email.strip():
         return email.strip()
     return f"{username}@{org_mail_domain(kanidm_domain)}"
+
+
+def default_display_name(domain: str) -> str:
+    labels = [part for part in str(domain).strip().lower().split(".") if part]
+    if len(labels) >= 2 and labels[0] in IDENTITY_HOST_LABELS:
+        label = labels[1]
+    elif labels:
+        label = labels[0]
+    else:
+        label = str(domain).strip()
+    return label.replace("-", " ").title()
+
+
+def branding_disabled(value: Any) -> bool:
+    if value is False:
+        return True
+    return str(value or "").strip().lower() in {"false", "no", "off", "0"}
+
+
+def oauth2_icons_enabled(config: dict) -> bool:
+    branding = config.get("branding") or {}
+    if not isinstance(branding, dict):
+        return True
+    return not branding_disabled(branding.get("oauth2_icons", True))
+
+
+def image_type_for_path(path: Path) -> str:
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix == "jpeg":
+        return "jpg"
+    if suffix not in SUPPORTED_BRANDING_IMAGE_TYPES:
+        raise ValueError(
+            f"Unsupported branding image type {suffix!r}; "
+            f"expected one of {', '.join(sorted(SUPPORTED_BRANDING_IMAGE_TYPES))}"
+        )
+    return suffix
+
+
+def validate_image_file(path: Path) -> None:
+    size = path.stat().st_size
+    if size <= 0:
+        raise ValueError(f"branding image is empty: {path}")
+    if size > MAX_BRANDING_IMAGE_BYTES:
+        raise ValueError(
+            f"branding image exceeds Kanidm's 256 KB limit ({size} bytes): {path}"
+        )
+
+
+def _download_url(url: str, dest: Path, *, max_bytes: int = MAX_BRANDING_IMAGE_BYTES) -> None:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "kanidm-easy-deploy/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        if content_type and not content_type.startswith(("image/", "application/octet-stream")):
+            raise ValueError(f"URL did not return an image ({content_type}): {url}")
+        data = bytearray()
+        while True:
+            chunk = response.read(8192)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > max_bytes:
+                raise ValueError(f"downloaded image exceeds 256 KB limit: {url}")
+    if not data:
+        raise ValueError(f"downloaded image is empty: {url}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+
+
+def _guess_extension(url: str, content: bytes) -> str:
+    path = urllib.parse.urlparse(url).path.lower()
+    for ext in ("svg", "png", "jpg", "jpeg", "gif", "webp", "ico"):
+        if path.endswith(f".{ext}"):
+            return "jpg" if ext == "jpeg" else ext
+    if content.startswith(b"<svg") or b"<svg" in content[:256]:
+        return "svg"
+    if content.startswith(b"\x89PNG"):
+        return "png"
+    if content.startswith((b"\xff\xd8\xff", b"GIF87a", b"GIF89a")):
+        return "jpg" if content.startswith(b"\xff\xd8\xff") else "gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "webp"
+    return "png"
+
+
+def resolve_image_source(source: str, *, cache_name: str) -> Path:
+    value = str(source or "").strip()
+    if not value:
+        raise ValueError("branding image source must not be empty")
+    if value.startswith(("http://", "https://")):
+        BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+        cache_base = BRANDING_DIR / cache_name
+        temp = cache_base.with_suffix(".download")
+        _download_url(value, temp)
+        content = temp.read_bytes()
+        ext = _guess_extension(value, content)
+        if ext == "ico":
+            ext = "png"
+        if ext not in SUPPORTED_BRANDING_IMAGE_TYPES:
+            raise ValueError(f"Unsupported downloaded image type from {value!r}")
+        dest = cache_base.with_suffix(f".{ext}")
+        temp.replace(dest)
+        validate_image_file(dest)
+        return dest
+    path = Path(value)
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"branding image not found: {source}")
+    validate_image_file(path)
+    return path
+
+
+class FaviconLinkParser(HTMLParser):
+    def __init__(self, base_url: str) -> None:
+        super().__init__()
+        self.base_url = base_url
+        self.icons: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "link":
+            return
+        attr_map = {key.lower(): (value or "") for key, value in attrs}
+        rel = str(attr_map.get("rel") or "").lower()
+        if "icon" not in rel.split():
+            return
+        href = str(attr_map.get("href") or "").strip()
+        if not href:
+            return
+        url = urllib.parse.urljoin(self.base_url, href)
+        priority = 0 if url.lower().endswith(".svg") else 1
+        if "apple-touch-icon" in rel:
+            priority = 2
+        self.icons.append((priority, url))
+
+
+def landing_origin(landing_url: str) -> str:
+    parsed = urllib.parse.urlparse(str(landing_url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def discover_favicon_urls(landing_url: str) -> list[str]:
+    origin = landing_origin(landing_url)
+    if not origin:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(url: str) -> None:
+        normalized = url.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+
+    try:
+        request = urllib.request.Request(
+            landing_url,
+            headers={"User-Agent": "kanidm-easy-deploy/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if "html" in content_type:
+                html = response.read(256_000).decode("utf-8", errors="replace")
+                parser = FaviconLinkParser(landing_url)
+                parser.feed(html)
+                for _, icon_url in sorted(parser.icons):
+                    add(icon_url)
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        pass
+
+    for candidate in (
+        f"{origin}/favicon.svg",
+        f"{origin}/favicon.png",
+        f"{origin}/favicon.ico",
+        f"{origin}/apple-touch-icon.png",
+        f"{origin}/apple-touch-icon-precomposed.png",
+    ):
+        add(candidate)
+    return urls
+
+
+def fetch_landing_favicon(landing_url: str, *, cache_name: str) -> Path | None:
+    for index, url in enumerate(discover_favicon_urls(landing_url)):
+        try:
+            return resolve_image_source(url, cache_name=f"{cache_name}-{index}")
+        except (OSError, ValueError, urllib.error.URLError):
+            continue
+    return None
+
+
+def resolve_oauth2_client_image(config: dict, client: dict) -> Path | None:
+    image_setting = client.get("image")
+    client_id = str(client.get("client_id") or "client").strip() or "client"
+    if branding_disabled(image_setting):
+        return None
+    if image_setting:
+        return resolve_image_source(str(image_setting), cache_name=f"oauth2-{client_id}")
+    if not oauth2_icons_enabled(config):
+        return None
+    landing = str(client.get("landing_url") or "").strip()
+    if not landing:
+        redirects = client.get("redirect_uris") or []
+        if redirects:
+            landing = str(redirects[0]).strip()
+    if not landing:
+        return None
+    return fetch_landing_favicon(landing, cache_name=f"oauth2-{client_id}")
+
+
+def set_kanidm_domain_image(image_path: Path) -> None:
+    image_type = image_type_for_path(image_path)
+    container_path = f"/tmp/kanidm-branding{image_path.suffix.lower() or '.img'}"
+    result = kanidm_cli(
+        "system",
+        "domain",
+        "set-image",
+        container_path,
+        image_type,
+        "--name",
+        "idm_admin",
+        mounts=[(str(image_path.resolve()), f"{container_path}:ro")],
+    )
+    if not cli_ok(result):
+        raise RuntimeError(
+            "Could not set Kanidm portal image: "
+            f"{cli_output(result).strip()[:500]}"
+        )
+
+
+def set_kanidm_oauth2_image(client_id: str, image_path: Path) -> None:
+    image_type = image_type_for_path(image_path)
+    container_path = f"/tmp/kanidm-branding-{client_id}{image_path.suffix.lower() or '.img'}"
+    result = kanidm_cli(
+        "system",
+        "oauth2",
+        "set-image",
+        client_id,
+        container_path,
+        image_type,
+        "--name",
+        "idm_admin",
+        mounts=[(str(image_path.resolve()), f"{container_path}:ro")],
+    )
+    if not cli_ok(result):
+        raise RuntimeError(
+            f"Could not set OAuth2 image for {client_id!r}: "
+            f"{cli_output(result).strip()[:500]}"
+        )
+
+
+def apply_portal_branding(config: dict) -> None:
+    branding = config.get("branding") or {}
+    if branding is False:
+        return
+    if not isinstance(branding, dict):
+        raise ValueError("branding must be a mapping when set")
+
+    display_name = str(branding.get("display_name") or "").strip()
+    if not display_name:
+        display_name = default_display_name(str(config["kanidm"]["domain"]))
+    named = kanidm_cli(
+        "system",
+        "domain",
+        "set-displayname",
+        display_name,
+        "--name",
+        "idm_admin",
+    )
+    if not cli_ok(named):
+        raise RuntimeError(
+            "Could not set Kanidm portal display name: "
+            f"{cli_output(named).strip()[:500]}"
+        )
+
+    if branding_disabled(branding.get("logo", None)) and "logo" in branding:
+        return
+
+    logo_source = branding.get("logo")
+    if logo_source:
+        logo_path = resolve_image_source(str(logo_source), cache_name="portal-logo")
+    else:
+        logo_path = DEFAULT_LOGO_PATH
+        validate_image_file(logo_path)
+    set_kanidm_domain_image(logo_path)
+    print(f"  Portal branding: {display_name}")
+
+
+def apply_oauth2_client_image(config: dict, client: dict) -> None:
+    client_id = str(client.get("client_id") or "").strip()
+    if not client_id:
+        return
+    try:
+        image_path = resolve_oauth2_client_image(config, client)
+    except (OSError, ValueError) as exc:
+        print(
+            f"Warning: could not resolve OAuth2 image for {client_id!r}: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if not image_path:
+        return
+    set_kanidm_oauth2_image(client_id, image_path)
+    print(f"  OAuth2 icon set: {client_id}")
 
 
 def load_engine_oidc_clients() -> list[Any]:
@@ -521,6 +836,7 @@ def kanidm_cli(
     *args: str,
     password: str | None = None,
     input_text: str | None = None,
+    mounts: list[tuple[str, str]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     config = load_config()
     kanidm = config["kanidm"]
@@ -534,6 +850,8 @@ def kanidm_cli(
         "kanidm-net",
         *kanidm_cli_volume_mounts(kanidm["data_dir"]),
     ]
+    for host_path, container_path in mounts or []:
+        cmd.extend(["-v", f"{host_path}:{container_path}"])
     if password:
         cmd.extend(["-e", f"KANIDM_PASSWORD={password}"])
     cmd.extend([tools, "kanidm", *args])
@@ -834,6 +1152,7 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
             ".kanidm-easy-deploy/secrets.yaml."
         )
     secrets["IDM_ADMIN_PASSWORD"] = idm_admin_password
+    apply_portal_branding(config)
 
     for group in configured_groups(config):
         existing_group = kanidm_cli("group", "get", group, "--name", "idm_admin")
@@ -1108,6 +1427,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                 f"OAuth2 client {client_id!r} could not be verified after apply: "
                 f"{(verified.stderr or verified.stdout or '').strip()[:500]}"
             )
+        apply_oauth2_client_image(config, client)
         print(f"  OIDC client ready: {client_id} → {landing}")
     remove_stale_oauth2_clients({str(item.get("client_id") or "").strip() for item in clients if isinstance(item, dict)})
 

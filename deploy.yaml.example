@@ -11,6 +11,14 @@ kanidm:
   # LDAP is always enabled on the container network (ldaps://kanidm:3636).
   ldap: true
 
+# Optional portal branding (replaces Kanidm's default Ferris logo on sign-in).
+branding:
+  display_name: Example Organisation
+  # Local path (relative to this repo) or https URL. Omit to use the bundled default.
+  # logo: branding/my-logo.svg
+  # Set OAuth2 application icons from each client's landing page favicon (default: true).
+  oauth2_icons: true
+
 proxy:
   type: caddy
   # standalone — this kit runs its own Caddy on :443 (single-service VPS)
@@ -43,3 +51,6 @@ oidc:
   enabled: true
   # Engine writes extra clients to .kanidm-easy-deploy/integration/oidc-clients.d/
   clients: []
+  # Per-client overrides (optional):
+  #   - client_id: opencloud
+  #     image: branding/opencloud.png   # local path or URL; set false to skip

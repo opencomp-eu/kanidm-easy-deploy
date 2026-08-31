@@ -50,7 +50,8 @@ On first apply the kit:
 2. Creates the initial person from `users:` and prints a one-time credential enrollment link. Open that link to set the person's web/OIDC password and optional MFA.
 3. Creates the groups listed in `groups:` and memberships on that person.
 4. Registers OAuth2/OIDC clients from `oidc.clients` and engine sidecars.
-5. Creates a `stalwart-ldap` service account and API token for directory search, and adds it to `idm_mail_servers` so Stalwart can see person `mail` attributes.
+5. Applies portal branding (display name, logo) and OAuth2 application icons.
+6. Creates a `stalwart-ldap` service account and API token for directory search, and adds it to `idm_mail_servers` so Stalwart can see person `mail` attributes.
 
 After that, manage people and groups **in Kanidm**, not in OpenCloud, Matrix, or Stalwart.
 
@@ -66,6 +67,23 @@ credential enrollment/reset links.
 | LDAPS | `ldaps://kanidm:3636` on the Docker network (read-only; POSIX password bind) |
 
 Kanidm OIDC issuers are **per client**. OpenCloud uses `/oauth2/openid/opencloud`; Matrix uses `/oauth2/openid/matrix`.
+
+### Branding
+
+Kanidm ships with a Ferris-the-crab logo by default. This kit replaces it with a bundled professional logo and lets you customise branding in `deploy.yaml`:
+
+```yaml
+branding:
+  display_name: Acme Organisation
+  logo: branding/acme.svg          # local path or https URL
+  oauth2_icons: true               # fetch each app's favicon (default)
+```
+
+- Omit `logo` to keep the bundled default.
+- Set `logo: false` to leave the portal image unchanged.
+- OAuth2 application icons are fetched from each client's `landing_url` by default. Override per client with `oidc.clients[].image`, or disable with `oauth2_icons: false`.
+
+Images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kanidm's limit).
 
 ## Day-to-day
 

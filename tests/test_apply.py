@@ -10,8 +10,18 @@ import yaml
 
 from scripts.apply import (
     COMPOSE_PROJECT_NAME,
+    DEFAULT_LOGO_PATH,
     apply_oauth2_claim_maps,
+    apply_portal_branding,
+    branding_disabled,
+    default_display_name,
+    discover_favicon_urls,
+    image_type_for_path,
+    oauth2_icons_enabled,
     remove_stale_oauth2_clients,
+    resolve_image_source,
+    resolve_oauth2_client_image,
+    validate_image_file,
     build_client_toml,
     build_server_toml,
     cli_exists,
@@ -511,3 +521,105 @@ def test_remove_stale_oauth2_clients_keeps_active_stalwart(tmp_path, monkeypatch
     monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
     remove_stale_oauth2_clients({"stalwart"})
     assert calls == []
+
+
+def test_default_display_name_strips_identity_host():
+    assert default_display_name("auth.opencomp.eu") == "Opencomp"
+    assert default_display_name("idm.example.com") == "Example"
+
+
+def test_default_logo_is_small_svg():
+    assert DEFAULT_LOGO_PATH.is_file()
+    validate_image_file(DEFAULT_LOGO_PATH)
+    assert image_type_for_path(DEFAULT_LOGO_PATH) == "svg"
+
+
+def test_branding_disabled_values():
+    assert branding_disabled(False)
+    assert branding_disabled("off")
+    assert not branding_disabled(True)
+    assert not branding_disabled("yes")
+
+
+def test_oauth2_icons_enabled_defaults_true():
+    assert oauth2_icons_enabled({})
+    assert oauth2_icons_enabled({"branding": {}})
+    assert not oauth2_icons_enabled({"branding": {"oauth2_icons": False}})
+
+
+def test_resolve_image_source_local_path(tmp_path: Path, monkeypatch):
+    from scripts import apply as apply_module
+
+    branding_dir = tmp_path / "branding"
+    branding_dir.mkdir()
+    logo = branding_dir / "logo.svg"
+    logo.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    monkeypatch.setattr(apply_module, "PROJECT_ROOT", tmp_path)
+    resolved = resolve_image_source("branding/logo.svg", cache_name="test")
+    assert resolved == logo.resolve()
+
+
+def test_discover_favicon_urls_includes_origin_candidates():
+    urls = discover_favicon_urls("https://cloud.example.com/app")
+    assert "https://cloud.example.com/favicon.svg" in urls
+    assert "https://cloud.example.com/favicon.ico" in urls
+
+
+def test_resolve_oauth2_client_image_honours_explicit_path(tmp_path: Path, monkeypatch):
+    from scripts import apply as apply_module
+
+    icon = tmp_path / "opencloud.png"
+    icon.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    monkeypatch.setattr(apply_module, "PROJECT_ROOT", tmp_path)
+    config = _base_config()
+    client = {
+        "client_id": "opencloud",
+        "landing_url": "https://cloud.example.com",
+        "image": "opencloud.png",
+    }
+    resolved = resolve_oauth2_client_image(config, client)
+    assert resolved == icon.resolve()
+
+
+def test_resolve_oauth2_client_image_skips_when_disabled(tmp_path: Path, monkeypatch):
+    from scripts import apply as apply_module
+
+    monkeypatch.setattr(apply_module, "fetch_landing_favicon", lambda *args, **kwargs: tmp_path / "x.png")
+    config = _base_config(branding={"oauth2_icons": False})
+    client = {"client_id": "opencloud", "landing_url": "https://cloud.example.com"}
+    assert resolve_oauth2_client_image(config, client) is None
+
+
+def test_apply_portal_branding_uses_defaults(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    monkeypatch.setattr(apply_module, "set_kanidm_domain_image", lambda path: calls.append(("set-image", str(path))))
+    apply_portal_branding(_base_config())
+    assert ("system", "domain", "set-displayname", "Test", "--name", "idm_admin") in calls
+    assert any(call[0] == "set-image" for call in calls)
+
+
+def test_apply_portal_branding_skips_logo_when_disabled(monkeypatch):
+    from scripts import apply as apply_module
+
+    image_calls: list[Path] = []
+
+    def fake_cli(*args: str, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    monkeypatch.setattr(apply_module, "set_kanidm_domain_image", lambda path: image_calls.append(path))
+    apply_portal_branding(_base_config(branding={"display_name": "Acme", "logo": False}))
+    assert image_calls == []

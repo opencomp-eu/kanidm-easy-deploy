@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Identity portal">
+  <defs>
+    <linearGradient id="bg" x1="16" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e40af"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <path
+    fill="#ffffff"
+    d="M64 22 34 38v26c0 21.5 13.5 41.2 30 47 16.5-5.8 30-25.5 30-47V38L64 22zm0 14.2 18 9.8v20c0 12.8-8.2 25.2-18 29.4-9.8-4.2-18-16.6-18-29.4V46l18-9.8z"
+  />
+  <circle cx="64" cy="58" r="7" fill="#ffffff"/>
+  <path fill="#ffffff" d="M64 67c-8.8 0-16 4.5-16 10v3h32v-3c0-5.5-7.2-10-16-10z"/>
+</svg>
