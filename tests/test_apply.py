@@ -369,15 +369,66 @@ def test_validate_config_rejects_reserved_person_name():
 def test_create_enrollment_link_uses_public_origin(monkeypatch):
     from scripts import apply as apply_module
 
-    result = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout="This link: https://kanidm:8443/ui/reset?token=abc\n",
-        stderr="",
-    )
-    monkeypatch.setattr(apply_module, "kanidm_cli", lambda *args: result)
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="This link: https://kanidm:8443/ui/reset?token=abc\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
     assert create_enrollment_link("alice", "auth.example.com") == (
         "https://auth.example.com/ui/reset?token=abc"
+    )
+    assert calls[0] == (
+        "person",
+        "credential",
+        "create-reset-token",
+        "alice",
+        "--ttl",
+        "86400",
+        "--name",
+        "idm_admin",
+    )
+
+
+def test_create_enrollment_link_falls_back_to_positional_ttl(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout="",
+                stderr="unsupported",
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="This link: https://kanidm:8443/ui/reset?token=xyz\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    assert create_enrollment_link("alice", "auth.example.com") == (
+        "https://auth.example.com/ui/reset?token=xyz"
+    )
+    assert calls[1] == (
+        "person",
+        "credential",
+        "create-reset-token",
+        "alice",
+        "86400",
+        "--name",
+        "idm_admin",
     )
 
 

@@ -1117,7 +1117,14 @@ def ensure_admin_login(password: str) -> str:
 
 
 def credential_status(username: str) -> subprocess.CompletedProcess[str]:
-    return kanidm_cli("person", "credential", "status", username)
+    return kanidm_cli(
+        "person",
+        "credential",
+        "status",
+        username,
+        "--name",
+        "idm_admin",
+    )
 
 
 def create_enrollment_link(username: str, domain: str) -> str:
@@ -1129,10 +1136,20 @@ def create_enrollment_link(username: str, domain: str) -> str:
         username,
         "--ttl",
         "86400",
+        "--name",
+        "idm_admin",
     )
     if not cli_ok(result):
-        # Kanidm 1.7 accepted TTL as a positional argument.
-        result = kanidm_cli("person", "credential", "create-reset-token", username, "86400")
+        # Kanidm <= 1.8 accepted TTL as a positional argument.
+        result = kanidm_cli(
+            "person",
+            "credential",
+            "create-reset-token",
+            username,
+            "86400",
+            "--name",
+            "idm_admin",
+        )
     if not cli_ok(result):
         print(
             f"Warning: could not create enrollment link for {username!r}: "
