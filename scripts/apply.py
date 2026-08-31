@@ -1306,11 +1306,6 @@ def write_stalwart_identity_secrets(secrets: dict) -> None:
         existing.setdefault("ldap", {})
         if isinstance(existing["ldap"], dict):
             existing["ldap"]["bind_secret"] = token
-    oidc_secret = str(secrets.get("OIDC_SECRET_STALWART") or "").strip()
-    if oidc_secret:
-        existing.setdefault("oidc", {})
-        if isinstance(existing["oidc"], dict):
-            existing["oidc"]["client_secret"] = oidc_secret
     write_sidecar(sibling, existing)
 
 

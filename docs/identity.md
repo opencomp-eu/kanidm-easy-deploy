@@ -13,9 +13,10 @@ Easy Deploy treats Kanidm as the authoritative directory for the organisation.
                         │
               ┌─────────┼─────────┐
               │         │         │
-             OIDC      OIDC      LDAP
+             OIDC      OIDC      OIDC (webmail)
+              │         │         LDAP (directory + IMAP fallback)
               │         │         │
-          OpenCloud   Matrix    Stalwart
+          OpenCloud   Matrix    Stalwart / Bulwark
 ```
 
 Do **not** create independent application accounts. Provision people and groups in Kanidm; the apps consume those identities.
@@ -32,7 +33,7 @@ Discovery is at that URL plus `/.well-known/openid-configuration`.
 
 | App | Client | Type | Typical scopes |
 |-----|--------|------|----------------|
-| OpenCloud | `opencloud` | public + PKCE | `openid profile email groups groups_name` plus `opencloudRoles` claim map |
+| OpenCloud | `opencloud` | public + PKCE | `openid profile email groups groups_name` |
 | Matrix MAS | `matrix` | confidential | `openid profile email` |
 | Stalwart / webmail | `stalwart-webui` | public + PKCE | `openid profile email` (landing URL is Bulwark / webmail) |
 
