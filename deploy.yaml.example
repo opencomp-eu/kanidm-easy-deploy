@@ -18,6 +18,7 @@ branding:
   # logo: branding/my-logo.svg
   # Set OAuth2 application icons from each client's landing page favicon (default: true).
   oauth2_icons: true
+  # Login background is assets/branding/background.jpg (CSS overlay; not the 256 KB logo limit).
 
 proxy:
   type: caddy

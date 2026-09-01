@@ -585,6 +585,24 @@ def test_default_logo_is_small_svg():
     assert image_type_for_path(DEFAULT_LOGO_PATH) == "svg"
 
 
+def test_login_branding_assets_are_mounted():
+    from scripts.apply import PROJECT_ROOT
+
+    override_css = PROJECT_ROOT / "assets" / "branding" / "override.css"
+    background = PROJECT_ROOT / "assets" / "branding" / "background.jpg"
+    compose = (PROJECT_ROOT / "compose" / "docker-compose.yml").read_text()
+    css = override_css.read_text()
+
+    assert override_css.is_file()
+    assert background.is_file()
+    assert "../assets/branding/override.css:/hpkg/override.css:ro" in compose
+    assert "../assets/branding/background.jpg:/hpkg/img/background.jpg:ro" in compose
+    assert 'url("/pkg/img/background.jpg")' in css
+    assert "filter: blur(" in css
+    assert "main.form-signin .btn" in css
+    assert "width: 100%" in css
+
+
 def test_branding_disabled_values():
     assert branding_disabled(False)
     assert branding_disabled("off")

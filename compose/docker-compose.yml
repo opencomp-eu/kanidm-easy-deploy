@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     volumes:
       - ${KANIDM_DATA_DIR}:/data
+      - ../assets/branding/override.css:/hpkg/override.css:ro
+      - ../assets/branding/background.jpg:/hpkg/img/background.jpg:ro
     networks:
       - kanidm-net
 

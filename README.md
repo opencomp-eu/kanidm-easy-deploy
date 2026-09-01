@@ -82,8 +82,9 @@ branding:
 - Omit `logo` to keep the bundled default.
 - Set `logo: false` to leave the portal image unchanged.
 - OAuth2 application icons are fetched from each client's `landing_url` by default. Override per client with `oidc.clients[].image`, or disable with `oauth2_icons: false`.
+- The sign-in page uses `assets/branding/background.jpg` behind a blurred overlay, and a full-width Begin button. Replace that image (or edit `assets/branding/override.css`) and recreate the `kanidm` container to pick up changes.
 
-Images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kanidm's limit). Portal branding uses Kanidm's `admin` account (not `idm_admin`); `apply.sh` recovers and stores `ADMIN_PASSWORD` in secrets automatically.
+Portal **logo** images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kanidm's limit). The login **background** is served as a static file and is not subject to that cap. Portal branding uses Kanidm's `admin` account (not `idm_admin`); `apply.sh` recovers and stores `ADMIN_PASSWORD` in secrets automatically.
 
 ## Day-to-day
 
