@@ -55,3 +55,13 @@ oidc:
   # Per-client overrides (optional):
   #   - client_id: opencloud
   #     image: branding/opencloud.png   # local path or URL; set false to skip
+
+# Kanidm Admin UI — web console for managing Kanidm itself (people, groups,
+# OAuth2 apps) at https://admin.<organisation domain>. Enabled by default;
+# set enabled: false to omit it.
+admin_ui:
+  enabled: true
+  # domain: admin.example.com          # override the admin.<org domain> default
+  # image: ghcr.io/opencomp-eu/kanidm-admin-ui
+  # tag: v0.1.1
+  # admin_group: idm_admins            # group whose members may log in

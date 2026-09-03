@@ -50,6 +50,8 @@ def update_from_wizard(
     admin_email: str,
     admin_password: str | None,
     proxy_mode: str,
+    admin_ui_enabled: bool = True,
+    admin_ui_domain: str | None = None,
     path: Path = DEFAULT_DEPLOY_PATH,
 ) -> None:
     config = load_or_init(path)
@@ -78,6 +80,10 @@ def update_from_wizard(
     if admin_password:
         user_entry["password"] = admin_password
     config["users"] = [user_entry]
+    admin_ui: dict[str, Any] = {"enabled": bool(admin_ui_enabled)}
+    if admin_ui_enabled and admin_ui_domain:
+        admin_ui["domain"] = str(admin_ui_domain).strip().rstrip("/")
+    config["admin_ui"] = admin_ui
     config["groups"] = list(DEFAULT_GROUPS)
     config["oidc"] = {"enabled": True, "clients": list((config.get("oidc") or {}).get("clients") or [])}
 

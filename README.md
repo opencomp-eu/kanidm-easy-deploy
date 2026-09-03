@@ -51,13 +51,34 @@ On first apply the kit:
 3. Creates the groups listed in `groups:` and memberships on that person.
 4. Registers OAuth2/OIDC clients from `oidc.clients` and engine sidecars.
 5. Applies portal branding (display name, logo) and OAuth2 application icons.
-6. Creates a `stalwart-ldap` service account and API token for directory search, and adds it to `idm_mail_servers` so Stalwart can see person `mail` attributes.
+6. Deploys the optional **Kanidm Admin UI** (enabled by default): registers its
+   `kanidm_admin_ui` OIDC client, creates the `admin_ui_svc` service account
+   (member of `idm_admins`, read-write API token), and enrolls the initial
+   people in `idm_admins` so they can log in.
+7. Creates a `stalwart-ldap` service account and API token for directory search, and adds it to `idm_mail_servers` so Stalwart can see person `mail` attributes.
 
 After that, manage people and groups **in Kanidm**, not in OpenCloud, Matrix, or Stalwart.
 
 `person posix set-password` only sets a Unix/LDAP password; it does **not**
 create a web-login credential. Easy Deploy instead uses Kanidm's supported
 credential enrollment/reset links.
+
+### Admin UI
+
+The kit ships [Kanidm Admin UI](https://github.com/opencomp-eu/kanidm-admin-ui) — a web console for managing people, groups, and OAuth2 apps without the CLI. It is served at `https://admin.<organisation domain>` (e.g. identity `idm.example.com` → `admin.example.com`), with HTTPS from the same Caddy that fronts the Kanidm portal.
+
+- Logins go through Kanidm OIDC and are restricted to members of `idm_admins` (override with `admin_ui.admin_group`). The wizard's initial person is enrolled automatically.
+- Kanidm stays the source of truth; the UI talks to Kanidm through a dedicated `admin_ui_svc` service account (API token stored in `secrets.yaml`, never exposed to the browser).
+- Enabled by default. Disable with the wizard (`n` at "Enable Kanidm Admin UI?") or in `deploy.yaml`:
+
+  ```yaml
+  admin_ui:
+    enabled: false
+  ```
+
+  Re-apply afterwards: the `kanidm_admin_ui` OAuth2 client and the container are removed, and the Caddy site block disappears. Set `admin_ui.domain` to serve it on a different host.
+
+The kit wires the Admin UI for Kanidm's self-signed TLS (`KANIDM_TLS_CA_FILE`), the per-client OIDC issuer, and public reset links (`KANIDM_PUBLIC_URL`); the pinned `admin_ui.tag` tracks a known-good kanidm-admin-ui release (0.1.1+, which implements that contract).
 
 ### Protocols
 

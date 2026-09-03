@@ -36,6 +36,7 @@ Discovery is at that URL plus `/.well-known/openid-configuration`.
 | OpenCloud | `opencloud` | public + PKCE | `openid profile email groups groups_name` |
 | Matrix MAS | `matrix` | confidential | `openid profile email` |
 | Stalwart / webmail | `stalwart-webui` | public + PKCE | `openid profile email` (landing URL is Bulwark / webmail) |
+| Admin UI | `kanidm_admin_ui` | confidential | `openid profile email` (this kit registers it automatically) |
 
 OpenCloud no longer uses the `oidc` role-assignment driver with Kanidm. Custom claims such as `opencloudRoles` often never reach the access token or UserInfo, which sent people to `/access-denied` after a successful login. The Kanidm overlay assigns the built-in `user` role at login (`PROXY_ROLE_ASSIGNMENT_DRIVER=default`). The operator in `opencloud-admin` is still recorded as `OC_ADMIN_USER_ID`.
 

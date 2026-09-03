@@ -2,30 +2,39 @@
 
 from __future__ import annotations
 
+import base64
 import subprocess
 from pathlib import Path
-
 import pytest
 import yaml
 
 from scripts.apply import (
     COMPOSE_PROJECT_NAME,
     DEFAULT_LOGO_PATH,
+    admin_ui_caddy_block,
+    admin_ui_domain,
+    admin_ui_enabled,
+    admin_ui_external_url,
     apply_oauth2_claim_maps,
     apply_portal_branding,
     branding_disabled,
-    default_display_name,
-    discover_favicon_urls,
-    image_type_for_path,
-    oauth2_icons_enabled,
-    remove_stale_oauth2_clients,
-    resolve_image_source,
-    resolve_oauth2_client_image,
-    validate_image_file,
     build_client_toml,
     build_server_toml,
     cli_exists,
     cli_json_field,
+    default_display_name,
+    discover_favicon_urls,
+    ensure_admin_ui_admin_members,
+    ensure_admin_ui_cookie_secret,
+    ensure_admin_ui_service_account,
+    image_type_for_path,
+    oauth2_icons_enabled,
+    remove_stale_oauth2_clients,
+    render_caddyfile,
+    resolve_image_source,
+    resolve_oauth2_client_image,
+    validate_image_file,
+    write_compose_env,
     cli_ok,
     configured_groups,
     create_enrollment_link,
@@ -141,11 +150,16 @@ def test_kanidm_cli_state_repairs_old_empty_object(tmp_path: Path):
 
 def test_derive_compose_files_integrate():
     files = derive_compose_files(_base_config(proxy={"type": "caddy", "mode": "integrate"}))
-    assert files == ["docker-compose.yml", "integrate.yml"]
+    assert files == ["docker-compose.yml", "integrate.yml", "admin-ui.yml", "admin-ui-integrate.yml"]
 
 
 def test_derive_compose_files_standalone():
     files = derive_compose_files(_base_config())
+    assert files == ["docker-compose.yml", "caddy.yml", "admin-ui.yml"]
+
+
+def test_derive_compose_files_omits_admin_ui_when_disabled():
+    files = derive_compose_files(_base_config(admin_ui={"enabled": False}))
     assert files == ["docker-compose.yml", "caddy.yml"]
 
 
@@ -570,7 +584,7 @@ def test_remove_stale_oauth2_clients_keeps_active_stalwart(tmp_path, monkeypatch
 
     monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
     monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
-    remove_stale_oauth2_clients({"stalwart"})
+    remove_stale_oauth2_clients({"stalwart", apply_module.ADMIN_UI_CLIENT_ID})
     assert calls == []
 
 
@@ -707,3 +721,246 @@ def test_apply_portal_branding_skips_logo_when_disabled(monkeypatch):
     monkeypatch.setattr(apply_module, "set_kanidm_domain_image", lambda path: image_calls.append(path))
     apply_portal_branding(_base_config(branding={"display_name": "Acme", "logo": False}))
     assert image_calls == []
+
+
+def test_admin_ui_enabled_by_default():
+    assert admin_ui_enabled(_base_config())
+    assert not admin_ui_enabled(_base_config(admin_ui={"enabled": False}))
+
+
+def test_admin_ui_domain_defaults_to_org_subdomain():
+    assert admin_ui_domain(_base_config()) == "admin.test.example"
+    assert admin_ui_domain(_base_config(admin_ui={"domain": "console.example.com"})) == (
+        "console.example.com"
+    )
+
+
+def test_admin_ui_external_url_is_https_origin():
+    assert admin_ui_external_url(_base_config()) == "https://admin.test.example"
+
+
+def test_oidc_clients_injects_confidential_admin_ui_client():
+    clients = {item["client_id"]: item for item in oidc_clients(_base_config())}
+    admin = clients["kanidm_admin_ui"]
+    assert admin["landing_url"] == "https://admin.test.example"
+    assert admin["redirect_uris"] == ["https://admin.test.example/api/auth/callback"]
+    assert not admin.get("public")
+
+
+def test_oidc_clients_admin_ui_disabled():
+    config = _base_config(admin_ui={"enabled": False})
+    assert all(item.get("client_id") != "kanidm_admin_ui" for item in oidc_clients(config))
+
+
+def test_operator_client_overrides_admin_ui_defaults():
+    config = _base_config(
+        oidc={
+            "enabled": True,
+            "clients": [{"client_id": "kanidm_admin_ui", "landing_url": "https://console.other"}],
+        }
+    )
+    admin = next(item for item in oidc_clients(config) if item["client_id"] == "kanidm_admin_ui")
+    assert admin["landing_url"] == "https://console.other"
+    assert admin["redirect_uris"] == ["https://admin.test.example/api/auth/callback"]
+
+
+def test_validate_config_rejects_admin_ui_on_kanidm_domain():
+    with pytest.raises(ValueError, match="differ"):
+        validate_config(_base_config(admin_ui={"domain": "idm.test.example"}))
+
+
+def test_admin_ui_caddy_block_proxies_to_container():
+    block = admin_ui_caddy_block("admin.test.example")
+    assert "admin.test.example" in block
+    assert "reverse_proxy admin-ui:8080" in block
+
+
+def test_render_caddyfile_toggles_admin_block(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    template = tmp_path / "Caddyfile.template"
+    template.write_text("{{IDM_DOMAIN_BLOCK}}\n{{ADMIN_UI_DOMAIN_BLOCK}}\n")
+    output = tmp_path / "Caddyfile"
+    monkeypatch.setattr(apply_module, "CADDY_TEMPLATE", template)
+    monkeypatch.setattr(apply_module, "CADDYFILE", output)
+
+    render_caddyfile(_base_config())
+    text = output.read_text()
+    assert "idm.test.example" in text
+    assert "admin.test.example" in text
+    assert "reverse_proxy admin-ui:8080" in text
+
+    render_caddyfile(_base_config(admin_ui={"enabled": False}))
+    assert "admin.test.example" not in output.read_text()
+
+
+def test_caddyfile_template_keeps_both_placeholders():
+    from scripts.apply import CADDY_TEMPLATE
+
+    text = CADDY_TEMPLATE.read_text()
+    assert "{{IDM_DOMAIN_BLOCK}}" in text
+    assert "{{ADMIN_UI_DOMAIN_BLOCK}}" in text
+
+def test_integration_fragment_includes_admin_block(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    fragment = tmp_path / "caddy.caddy"
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+    monkeypatch.setattr(apply_module, "INTEGRATION_CADDY_FRAGMENT", fragment)
+    config = _base_config(proxy={"type": "caddy", "mode": "integrate"})
+    apply_module.render_integration_fragment(config)
+    text = fragment.read_text()
+    assert "idm.test.example {" in text
+    assert "admin.test.example {" in text
+
+    apply_module.render_integration_fragment(_base_config(admin_ui={"enabled": False}))
+    assert "admin.test.example" not in fragment.read_text()
+
+
+def test_write_compose_env_emits_admin_ui_vars(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    env_path = tmp_path / "compose.env"
+    monkeypatch.setattr(apply_module, "COMPOSE_ENV_PATH", env_path)
+    secrets = {
+        "ADMIN_UI_API_TOKEN": "ui-token",
+        "ADMIN_UI_COOKIE_SECRET": "cookie-secret",
+        "OIDC_SECRET_KANIDM_ADMIN_UI": "oidc-secret",
+    }
+
+    write_compose_env(_base_config(), secrets)
+    env = env_path.read_text()
+    assert "ADMIN_UI_IMAGE=ghcr.io/opencomp-eu/kanidm-admin-ui:v0.1.1" in env
+    assert "ADMIN_UI_KANIDM_URL=https://kanidm:8443" in env
+    assert "ADMIN_UI_KANIDM_PUBLIC_URL=https://idm.test.example" in env
+    assert "ADMIN_UI_EXTERNAL_URL=https://admin.test.example" in env
+    assert "ADMIN_UI_ADMIN_GROUP=idm_admins" in env
+    assert (
+        "ADMIN_UI_OIDC_ISSUER_URL=https://idm.test.example/oauth2/openid/kanidm_admin_ui" in env
+    )
+    assert "ADMIN_UI_API_TOKEN=ui-token" in env
+    assert "ADMIN_UI_COOKIE_SECRET=cookie-secret" in env
+    assert "ADMIN_UI_OIDC_SECRET=oidc-secret" in env
+
+    write_compose_env(_base_config(admin_ui={"enabled": False}), secrets)
+    assert "ADMIN_UI" not in env_path.read_text()
+
+
+def test_validate_config_rejects_admin_ui_on_kanidm_domain():
+    with pytest.raises(ValueError, match="differ"):
+        validate_config(
+            _base_config(
+                users=[
+                    {
+                        "username": "operator",
+                        "display_name": "Admin",
+                        "email": "admin@test.example",
+                    }
+                ],
+                admin_ui={"domain": "idm.test.example"},
+            )
+        )
+
+
+def test_ensure_admin_ui_service_account_creates_account_and_token(monkeypatch, tmp_path):
+    from scripts import apply as apply_module
+
+    monkeypatch.setattr(apply_module, "SECRETS_PATH", tmp_path / "secrets.yaml")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        if "service-account" in args and "get" in args:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="",
+                stderr="ERROR kanidm_cli: Http(404, Some(NoMatchingEntries), \"abc\")",
+            )
+        if "generate" in args:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"status":"Success","result":"ui-api-token"}\n',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    secrets: dict[str, str] = {}
+    ensure_admin_ui_service_account(secrets)
+    assert secrets["ADMIN_UI_API_TOKEN"] == "ui-api-token"
+    assert (
+        "service-account",
+        "create",
+        "admin_ui_svc",
+        "Kanidm Admin UI",
+        "idm_admins",
+        "--name",
+        "idm_admin",
+    ) in calls
+    assert ("group", "add-members", "idm_admins", "admin_ui_svc", "--name", "idm_admin") in calls
+    generate = next(call for call in calls if "generate" in call)
+    assert "--readwrite" in generate
+    assert "admin_ui_svc" in generate
+
+
+def test_ensure_admin_ui_service_account_skips_when_token_exists(monkeypatch):
+    from scripts import apply as apply_module
+
+    def fail_cli(*args: str):
+        raise AssertionError("kanidm_cli should not be called when a token already exists")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fail_cli)
+    secrets = {"ADMIN_UI_API_TOKEN": "existing-token"}
+    ensure_admin_ui_service_account(secrets)
+    assert secrets["ADMIN_UI_API_TOKEN"] == "existing-token"
+
+
+def test_ensure_admin_ui_cookie_secret_is_stable_32_bytes(monkeypatch, tmp_path):
+    from scripts import apply as apply_module
+
+    monkeypatch.setattr(apply_module, "SECRETS_PATH", tmp_path / "secrets.yaml")
+    secrets: dict[str, str] = {}
+    ensure_admin_ui_cookie_secret(secrets)
+    first = secrets["ADMIN_UI_COOKIE_SECRET"]
+    assert len(base64.b64decode(first)) == 32
+    ensure_admin_ui_cookie_secret(secrets)
+    assert secrets["ADMIN_UI_COOKIE_SECRET"] == first
+
+
+def test_ensure_admin_ui_admin_members_enrolls_initial_people(monkeypatch):
+    from scripts import apply as apply_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    ensure_admin_ui_admin_members(_base_config())
+    assert ("group", "add-members", "idm_admins", "admin", "--name", "idm_admin") in calls
+
+
+def test_disabled_admin_ui_client_is_removed_as_stale(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    clients_dir = tmp_path / "oidc-clients.d"
+    clients_dir.mkdir()
+    (clients_dir / "kanidm_admin_ui.yaml").write_text("client_id: kanidm_admin_ui\n")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        if args[:3] == ("system", "oauth2", "get"):
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="name: kanidm_admin_ui\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    remove_stale_oauth2_clients({"opencloud", "stalwart-webui"})
+    assert not (clients_dir / "kanidm_admin_ui.yaml").exists()
+    assert ("system", "oauth2", "delete", "kanidm_admin_ui", "--name", "idm_admin") in calls

@@ -57,6 +57,7 @@ gather_config() {
 	local domain data_dir
 	local admin_username admin_display_name admin_email
 	local proceed proxy_mode
+	local admin_ui_enable admin_ui_domain
 	local base_domain
 
 	print_banner
@@ -90,7 +91,14 @@ gather_config() {
 	if [[ "$proxy_mode" != "standalone" && "$proxy_mode" != "integrate" ]]; then
 		die "proxy mode must be 'standalone' or 'integrate'"
 	fi
-
+	echo
+	echo -e "${BOLD}  Admin UI${RESET}"
+	echo "  Web console for managing Kanidm (people, groups, OAuth2 apps)."
+	ask_yn admin_ui_enable "Enable Kanidm Admin UI?" "y"
+	admin_ui_domain=""
+	if [[ "$admin_ui_enable" == "y" ]]; then
+		ask admin_ui_domain "Admin UI domain" "admin.${base_domain}"
+	fi
 	echo
 	echo -e "${BOLD}  Summary${RESET}"
 	echo "  Portal:        https://${domain}"
@@ -98,6 +106,11 @@ gather_config() {
 	echo "  Admin person:  ${admin_username} <${admin_email}>"
 	echo "  LDAP:          enabled (ldaps://kanidm:3636)"
 	echo "  Proxy mode:    ${proxy_mode}"
+	if [[ "$admin_ui_enable" == "y" ]]; then
+		echo "  Admin UI:      https://${admin_ui_domain}"
+	else
+		echo "  Admin UI:      disabled"
+	fi
 	echo
 	echo "  Ensure DNS A/AAAA for ${domain} points to this server before continuing."
 	echo
@@ -125,6 +138,8 @@ update_from_wizard(
     admin_email=${admin_email@Q},
     admin_password=None,
     proxy_mode=${proxy_mode@Q},
+    admin_ui_enabled=$([[ "$admin_ui_enable" == "y" ]] && echo True || echo False),
+    admin_ui_domain=${admin_ui_domain@Q},
     path=Path(${DEPLOY_YAML@Q}),
 )
 PY

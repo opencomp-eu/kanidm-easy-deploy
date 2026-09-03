@@ -1,0 +1,28 @@
+---
+services:
+  admin-ui:
+    container_name: kanidm_admin_ui
+    image: ${ADMIN_UI_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      kanidm:
+        condition: service_healthy
+    environment:
+      KANIDM_URL: ${ADMIN_UI_KANIDM_URL}
+      KANIDM_PUBLIC_URL: ${ADMIN_UI_KANIDM_PUBLIC_URL}
+      KANIDM_API_TOKEN: ${ADMIN_UI_API_TOKEN}
+      KANIDM_ADMIN_GROUP: ${ADMIN_UI_ADMIN_GROUP}
+      EXTERNAL_URL: ${ADMIN_UI_EXTERNAL_URL}
+      COOKIE_SECRET: ${ADMIN_UI_COOKIE_SECRET}
+      OIDC_ISSUER_URL: ${ADMIN_UI_OIDC_ISSUER_URL}
+      OIDC_CLIENT_ID: kanidm_admin_ui
+      OIDC_CLIENT_SECRET: ${ADMIN_UI_OIDC_SECRET}
+    volumes:
+      - ${KANIDM_DATA_DIR}/chain.pem:/certs/kanidm-chain.pem:ro
+    networks:
+      - kanidm-net
+
+networks:
+  kanidm-net:
+    external: true
+    name: kanidm-net

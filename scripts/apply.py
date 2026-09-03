@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -70,6 +71,13 @@ DEFAULT_OPENCLOUD_CLAIM_MAPS = [
         ],
     }
 ]
+
+ADMIN_UI_CLIENT_ID = "kanidm_admin_ui"
+ADMIN_UI_SERVICE_ACCOUNT = "admin_ui_svc"
+ADMIN_UI_DEFAULT_ADMIN_GROUP = "idm_admins"
+ADMIN_UI_DEFAULT_IMAGE = "ghcr.io/opencomp-eu/kanidm-admin-ui"
+ADMIN_UI_DEFAULT_TAG = "v0.1.1"
+ADMIN_UI_SCOPES = ["openid", "profile", "email"]
 
 
 def to_bool(value: Any) -> bool:
@@ -151,6 +159,14 @@ def validate_config(config: dict) -> None:
                 "choose a person username such as 'operator'"
             )
 
+    if admin_ui_enabled(config):
+        admin_domain = admin_ui_domain(config)
+        if not admin_domain:
+            raise ValueError("admin_ui.domain must be set when the admin UI is enabled")
+        if admin_domain == domain:
+            raise ValueError(
+                "admin_ui.domain must differ from kanidm.domain; both would claim the same Caddy site"
+            )
     proxy_mode(config)
 
 
@@ -538,6 +554,39 @@ def merge_oidc_clients(engine_clients: list[Any], operator_clients: list[Any]) -
     return list(by_id.values())
 
 
+def admin_ui_config(config: dict) -> dict:
+    section = config.get("admin_ui")
+    return section if isinstance(section, dict) else {}
+
+
+def admin_ui_enabled(config: dict) -> bool:
+    return not branding_disabled(admin_ui_config(config).get("enabled", True))
+
+
+def admin_ui_domain(config: dict) -> str:
+    """Admin UI host: explicit override, else admin.<organisation domain>."""
+    domain = str(admin_ui_config(config).get("domain") or "").strip()
+    if domain:
+        return domain.rstrip("/")
+    return f"admin.{org_mail_domain(str(config['kanidm']['domain']))}"
+
+
+def admin_ui_external_url(config: dict) -> str:
+    return kanidm_origin(admin_ui_domain(config))
+
+
+def admin_ui_oidc_client(config: dict) -> dict:
+    """Built-in confidential client for the admin UI; operator entries override it."""
+    external = admin_ui_external_url(config)
+    return {
+        "client_id": ADMIN_UI_CLIENT_ID,
+        "client_name": "Kanidm Admin UI",
+        "landing_url": external,
+        "redirect_uris": [f"{external}/api/auth/callback"],
+        "scopes": list(ADMIN_UI_SCOPES),
+    }
+
+
 def oidc_clients(config: dict) -> list[Any]:
     oidc = config.get("oidc") or {}
     operator: list[Any] = []
@@ -546,7 +595,10 @@ def oidc_clients(config: dict) -> list[Any]:
         if isinstance(clients, list):
             operator = clients
     engine = [] if managed_is_false(oidc) else load_engine_oidc_clients()
-    return merge_oidc_clients(engine, operator)
+    merged = merge_oidc_clients(engine, operator)
+    if admin_ui_enabled(config):
+        merged = merge_oidc_clients([admin_ui_oidc_client(config)], merged)
+    return merged
 
 
 def configured_groups(config: dict) -> list[str]:
@@ -570,19 +622,27 @@ def configured_groups(config: dict) -> list[str]:
 
 def compose_file_paths(config: dict) -> list[Path]:
     files = [COMPOSE_DIR / "docker-compose.yml"]
+    admin_files: list[str] = []
+    if admin_ui_enabled(config):
+        admin_files.append("admin-ui.yml")
     if proxy_mode(config) == "integrate":
         files.append(COMPOSE_DIR / "integrate.yml")
+        if admin_files:
+            admin_files.append("admin-ui-integrate.yml")
     else:
         files.append(COMPOSE_DIR / "caddy.yml")
+    files.extend(COMPOSE_DIR / name for name in admin_files)
     return files
 
 
 def derive_compose_files(config: dict) -> list[str]:
     files = ["docker-compose.yml"]
-    if proxy_mode(config) == "integrate":
-        files.append("integrate.yml")
-    else:
-        files.append("caddy.yml")
+    integrate = proxy_mode(config) == "integrate"
+    files.append("integrate.yml" if integrate else "caddy.yml")
+    if admin_ui_enabled(config):
+        files.append("admin-ui.yml")
+        if integrate:
+            files.append("admin-ui-integrate.yml")
     return files
 
 
@@ -725,10 +785,29 @@ def kanidm_portal_caddy_block(domain: str) -> str:
 }}"""
 
 
+def admin_ui_caddy_block(domain: str) -> str:
+    return f"""# kanidm-easy-deploy — admin UI
+{domain} {{
+    reverse_proxy admin-ui:8080
+    encode gzip
+    log
+}}"""
+
+
 def render_caddyfile(config: dict) -> None:
     domain = str(config["kanidm"]["domain"])
     block = kanidm_portal_caddy_block(domain)
-    rendered = render_template(CADDY_TEMPLATE.read_text(), {"IDM_DOMAIN_BLOCK": block.strip()})
+    rendered = render_template(
+        CADDY_TEMPLATE.read_text(),
+        {
+            "IDM_DOMAIN_BLOCK": block.strip(),
+            "ADMIN_UI_DOMAIN_BLOCK": (
+                admin_ui_caddy_block(admin_ui_domain(config)).strip()
+                if admin_ui_enabled(config)
+                else ""
+            ),
+        },
+    )
     CADDYFILE.parent.mkdir(parents=True, exist_ok=True)
     CADDYFILE.write_text(rendered + "\n")
 
@@ -736,10 +815,13 @@ def render_caddyfile(config: dict) -> None:
 def render_integration_fragment(config: dict) -> None:
     domain = str(config["kanidm"]["domain"])
     INTEGRATION_DIR.mkdir(parents=True, exist_ok=True)
-    INTEGRATION_CADDY_FRAGMENT.write_text(kanidm_portal_caddy_block(domain) + "\n")
+    fragment = kanidm_portal_caddy_block(domain)
+    if admin_ui_enabled(config):
+        fragment += "\n" + admin_ui_caddy_block(admin_ui_domain(config))
+    INTEGRATION_CADDY_FRAGMENT.write_text(fragment + "\n")
 
 
-def write_compose_env(config: dict) -> None:
+def write_compose_env(config: dict, secrets: dict) -> None:
     kanidm = config["kanidm"]
     image = f"{kanidm.get('image', 'docker.io/kanidm/server')}:{kanidm.get('tag', DEFAULT_KANIDM_TAG)}"
     tools = f"{kanidm.get('tools_image', 'docker.io/kanidm/tools')}:{kanidm.get('tools_tag', kanidm.get('tag', DEFAULT_KANIDM_TAG))}"
@@ -750,6 +832,24 @@ def write_compose_env(config: dict) -> None:
     ]
     if proxy_mode(config) == "standalone":
         lines.append(f"KED_CADDYFILE={CADDYFILE.resolve()}")
+    if admin_ui_enabled(config):
+        admin = admin_ui_config(config)
+        admin_image = (
+            f"{admin.get('image', ADMIN_UI_DEFAULT_IMAGE)}:{admin.get('tag', ADMIN_UI_DEFAULT_TAG)}"
+        )
+        lines.extend(
+            [
+                f"ADMIN_UI_IMAGE={admin_image}",
+                "ADMIN_UI_KANIDM_URL=https://kanidm:8443",
+                f"ADMIN_UI_KANIDM_PUBLIC_URL={kanidm_origin(str(kanidm['domain']))}",
+                f"ADMIN_UI_EXTERNAL_URL={admin_ui_external_url(config)}",
+                f"ADMIN_UI_ADMIN_GROUP={str(admin.get('admin_group') or ADMIN_UI_DEFAULT_ADMIN_GROUP)}",
+                f"ADMIN_UI_OIDC_ISSUER_URL={kanidm_issuer_url(str(kanidm['domain']), ADMIN_UI_CLIENT_ID)}",
+                f"ADMIN_UI_API_TOKEN={secrets.get('ADMIN_UI_API_TOKEN') or ''}",
+                f"ADMIN_UI_COOKIE_SECRET={secrets.get('ADMIN_UI_COOKIE_SECRET') or ''}",
+                f"ADMIN_UI_OIDC_SECRET={secrets.get(f'OIDC_SECRET_{ADMIN_UI_CLIENT_ID.upper()}') or ''}",
+            ]
+        )
     COMPOSE_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     COMPOSE_ENV_PATH.write_text("\n".join(lines) + "\n")
     COMPOSE_ENV_PATH.chmod(0o600)
@@ -769,7 +869,7 @@ def render_runtime_artifacts(config: dict, secrets: dict) -> None:
         render_integration_fragment(config)
     else:
         render_caddyfile(config)
-    write_compose_env(config)
+    write_compose_env(config, secrets)
     identity = {
         "provider": "kanidm",
         "domain": str(kanidm["domain"]),
@@ -1299,6 +1399,10 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
     kanidm_cli("system", "domain", "set-ldap-allow-unix-password-bind", "true")
     ensure_ldap_token(secrets)
     ensure_ldap_mail_read()
+    if admin_ui_enabled(config):
+        ensure_admin_ui_cookie_secret(secrets)
+        ensure_admin_ui_service_account(secrets)
+        ensure_admin_ui_admin_members(config)
     apply_oauth2_clients(config, secrets)
     write_stalwart_identity_secrets(secrets)
 
@@ -1383,6 +1487,95 @@ def ensure_ldap_mail_read() -> None:
         if not cli_ok(added, "already", "duplicate", "members already"):
             raise RuntimeError(
                 f"Could not add stalwart-ldap to {group}: "
+                f"{cli_output(added).strip()[:500]}"
+            )
+
+
+def ensure_admin_ui_cookie_secret(secrets: dict) -> None:
+    """Persistent AES-GCM session key for the admin UI (base64 of 32 random bytes)."""
+    if str(secrets.get("ADMIN_UI_COOKIE_SECRET") or "").strip():
+        return
+    secrets["ADMIN_UI_COOKIE_SECRET"] = base64.b64encode(os.urandom(32)).decode()
+    save_yaml(SECRETS_PATH, secrets)
+
+
+def ensure_admin_ui_service_account(secrets: dict) -> None:
+    """Create the admin UI service account and generate its read-write API token."""
+    if str(secrets.get("ADMIN_UI_API_TOKEN") or "").strip():
+        return
+    existing = kanidm_cli(
+        "service-account", "get", ADMIN_UI_SERVICE_ACCOUNT, "--name", "idm_admin"
+    )
+    if not cli_exists(existing):
+        created = kanidm_cli(
+            "service-account",
+            "create",
+            ADMIN_UI_SERVICE_ACCOUNT,
+            "Kanidm Admin UI",
+            ADMIN_UI_DEFAULT_ADMIN_GROUP,
+            "--name",
+            "idm_admin",
+        )
+        if not cli_ok(created, "already exists", "duplicate", "attributeuniqueness"):
+            raise RuntimeError(
+                f"Could not create {ADMIN_UI_SERVICE_ACCOUNT} service account: "
+                f"{cli_output(created).strip()[:800]}"
+            )
+    membership = kanidm_cli(
+        "group",
+        "add-members",
+        ADMIN_UI_DEFAULT_ADMIN_GROUP,
+        ADMIN_UI_SERVICE_ACCOUNT,
+        "--name",
+        "idm_admin",
+    )
+    if not cli_ok(membership, "already", "duplicate", "members already"):
+        raise RuntimeError(
+            f"Could not add {ADMIN_UI_SERVICE_ACCOUNT} to {ADMIN_UI_DEFAULT_ADMIN_GROUP}: "
+            f"{cli_output(membership).strip()[:500]}"
+        )
+    token = kanidm_cli(
+        "-o",
+        "json",
+        "service-account",
+        "api-token",
+        "generate",
+        ADMIN_UI_SERVICE_ACCOUNT,
+        "admin-ui",
+        "--readwrite",
+        "--name",
+        "idm_admin",
+    )
+    if not cli_ok(token):
+        raise RuntimeError(
+            f"Could not generate {ADMIN_UI_SERVICE_ACCOUNT} API token: "
+            f"{cli_output(token).strip()[:800]}"
+        )
+    secret = parse_api_token(token)
+    if not secret:
+        raise RuntimeError(
+            f"Kanidm generated an {ADMIN_UI_SERVICE_ACCOUNT} API token but its value "
+            f"could not be parsed:\n{cli_output(token).strip()[:800]}"
+        )
+    secrets["ADMIN_UI_API_TOKEN"] = secret
+    save_yaml(SECRETS_PATH, secrets)
+
+
+def ensure_admin_ui_admin_members(config: dict) -> None:
+    """Admin UI logins require admin_group membership; enroll the initial people."""
+    group = str(admin_ui_config(config).get("admin_group") or ADMIN_UI_DEFAULT_ADMIN_GROUP)
+    for user in config.get("users") or []:
+        if not isinstance(user, dict):
+            continue
+        username = str(user.get("username") or "").strip()
+        if not username:
+            continue
+        added = kanidm_cli(
+            "group", "add-members", group, username, "--name", "idm_admin"
+        )
+        if not cli_ok(added, "already", "duplicate", "members already"):
+            raise RuntimeError(
+                f"Could not add {username!r} to {group!r}: "
                 f"{cli_output(added).strip()[:500]}"
             )
 
@@ -1496,7 +1689,7 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
     remove_stale_oauth2_clients({str(item.get("client_id") or "").strip() for item in clients if isinstance(item, dict)})
 
 
-STALE_OAUTH2_CLIENT_IDS = ("stalwart",)
+STALE_OAUTH2_CLIENT_IDS = ("stalwart", ADMIN_UI_CLIENT_ID)
 
 
 def remove_stale_oauth2_clients(active_ids: set[str]) -> None:
@@ -1714,6 +1907,11 @@ def reconcile_runtime(skip_pull: bool = False) -> None:
     print("Starting Kanidm stack…")
     start_kanidm_stack()
     bootstrap_identity(config, secrets)
+    if admin_ui_enabled(config):
+        # The OIDC client secret and API token only exist after bootstrap; re-render
+        # compose.env and recreate admin-ui so the container runs with real values.
+        write_compose_env(config, secrets)
+        run_compose("up", "-d", "--remove-orphans")
 
 
 def print_summary(config: dict, secrets: dict) -> None:
@@ -1740,6 +1938,8 @@ def print_summary(config: dict, secrets: dict) -> None:
     clients = oidc_clients(config)
     if clients:
         print(f"OIDC clients:    {', '.join(str(item.get('client_id')) for item in clients if isinstance(item, dict))}")
+    if admin_ui_enabled(config):
+        print(f"Admin UI:        {admin_ui_external_url(config)}  (login: members of {str(admin_ui_config(config).get('admin_group') or ADMIN_UI_DEFAULT_ADMIN_GROUP)})")
     if proxy_mode(config) == "integrate":
         print(f"Proxy mode:      integrate (Caddy fragment: {INTEGRATION_CADDY_FRAGMENT})")
         print("                 Run easydeploy-engine apply.sh to refresh the shared Caddy.")

@@ -21,6 +21,16 @@ if [[ "$integrate" == "true" ]]; then
 else
 	compose_args+=(-f "${SCRIPT_DIR}/compose/caddy.yml")
 fi
+admin_ui="true"
+if [[ -f "$DEPLOY" ]] && sed -n '/^admin_ui:/,/^\S/p' "$DEPLOY" 2>/dev/null | grep -qE '^[[:space:]]*enabled:[[:space:]]*(false|no|off|0)[[:space:]]*$'; then
+	admin_ui="false"
+fi
+if [[ "$admin_ui" == "true" ]]; then
+	compose_args+=(-f "${SCRIPT_DIR}/compose/admin-ui.yml")
+	if [[ "$integrate" == "true" ]]; then
+		compose_args+=(-f "${SCRIPT_DIR}/compose/admin-ui-integrate.yml")
+	fi
+fi
 
 [[ -f "$ENV_FILE" ]] || die "Missing compose env — run bash apply.sh first"
 
