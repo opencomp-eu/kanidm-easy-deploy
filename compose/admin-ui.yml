@@ -15,6 +15,8 @@ services:
       EXTERNAL_URL: ${ADMIN_UI_EXTERNAL_URL}
       COOKIE_SECRET: ${ADMIN_UI_COOKIE_SECRET}
       KANIDM_TLS_CA_FILE: /certs/kanidm-ca.pem
+      OIDC_ISSUER_URL: ${ADMIN_UI_OIDC_ISSUER_URL}
+      OIDC_CLIENT_ID: kanidm_admin_ui
       OIDC_CLIENT_SECRET: ${ADMIN_UI_OIDC_SECRET}
     volumes:
       - ${KANIDM_DATA_DIR}/ca.pem:/certs/kanidm-ca.pem:ro
