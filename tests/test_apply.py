@@ -966,7 +966,8 @@ def test_disabled_admin_ui_client_is_removed_as_stale(tmp_path, monkeypatch):
     assert ("system", "oauth2", "delete", "kanidm_admin_ui", "--name", "idm_admin") in calls
 
 
-def _write_legacy_ca_certificate(tmp_path: Path) -> None:
+def _write_legacy_self_signed_certificate(tmp_path: Path) -> None:
+    """The original generator shape: one self-signed certificate, no local CA."""
     subprocess.run(
         [
             "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "30",
@@ -974,38 +975,51 @@ def _write_legacy_ca_certificate(tmp_path: Path) -> None:
             "-keyout", str(tmp_path / "key.pem"),
             "-out", str(tmp_path / "chain.pem"),
             "-subj", "/CN=idm.test.example",
-            "-addext", "basicConstraints=critical,CA:TRUE",
         ],
         check=True,
         capture_output=True,
     )
 
 
-def test_generate_tls_material_creates_end_entity_certificate(tmp_path: Path):
-    from scripts.apply import generate_tls_material, tls_cert_is_ca
-
-    assert generate_tls_material(tmp_path, "idm.test.example") is False
-    text = subprocess.run(
-        ["openssl", "x509", "-in", str(tmp_path / "chain.pem"), "-noout", "-text"],
+def _cert_text(path: Path) -> str:
+    return subprocess.run(
+        ["openssl", "x509", "-in", str(path), "-noout", "-text"],
         check=True,
         capture_output=True,
     ).stdout.decode()
+
+
+def test_generate_tls_material_creates_ca_signed_certificate(tmp_path: Path):
+    from scripts.apply import generate_tls_material
+
+    assert generate_tls_material(tmp_path, "idm.test.example") is False
+    assert (tmp_path / "ca.pem").is_file()
+    assert (tmp_path / "ca-key.pem").stat().st_mode & 0o777 == 0o600
+    text = _cert_text(tmp_path / "chain.pem")
     assert "CA:FALSE" in text
     assert "DNS:kanidm" in text
     assert "DNS:idm.test.example" in text
-    assert not tls_cert_is_ca(tmp_path / "chain.pem")
+    assert subprocess.run(
+        ["openssl", "verify", "-CAfile", str(tmp_path / "ca.pem"), str(tmp_path / "chain.pem")],
+        check=True,
+        capture_output=True,
+    ).returncode == 0
 
 
-def test_generate_tls_material_regenerates_legacy_ca_certificate(tmp_path: Path):
-    from scripts.apply import generate_tls_material, tls_cert_is_ca
+def test_generate_tls_material_migrates_legacy_self_signed_certificate(tmp_path: Path):
+    from scripts.apply import generate_tls_material
 
-    _write_legacy_ca_certificate(tmp_path)
-    assert tls_cert_is_ca(tmp_path / "chain.pem")
+    _write_legacy_self_signed_certificate(tmp_path)
     assert generate_tls_material(tmp_path, "idm.test.example") is True
-    assert not tls_cert_is_ca(tmp_path / "chain.pem")
+    assert "CA:FALSE" in _cert_text(tmp_path / "chain.pem")
+    assert subprocess.run(
+        ["openssl", "verify", "-CAfile", str(tmp_path / "ca.pem"), str(tmp_path / "chain.pem")],
+        check=True,
+        capture_output=True,
+    ).returncode == 0
 
 
-def test_generate_tls_material_keeps_existing_end_entity_certificate(tmp_path: Path):
+def test_generate_tls_material_keeps_existing_trusted_certificate(tmp_path: Path):
     from scripts.apply import generate_tls_material
 
     assert generate_tls_material(tmp_path, "idm.test.example") is False

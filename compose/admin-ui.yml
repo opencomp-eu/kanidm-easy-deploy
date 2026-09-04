@@ -14,11 +14,10 @@ services:
       KANIDM_ADMIN_GROUP: ${ADMIN_UI_ADMIN_GROUP}
       EXTERNAL_URL: ${ADMIN_UI_EXTERNAL_URL}
       COOKIE_SECRET: ${ADMIN_UI_COOKIE_SECRET}
-      OIDC_ISSUER_URL: ${ADMIN_UI_OIDC_ISSUER_URL}
-      OIDC_CLIENT_ID: kanidm_admin_ui
+      KANIDM_TLS_CA_FILE: /certs/kanidm-ca.pem
       OIDC_CLIENT_SECRET: ${ADMIN_UI_OIDC_SECRET}
     volumes:
-      - ${KANIDM_DATA_DIR}/chain.pem:/certs/kanidm-chain.pem:ro
+      - ${KANIDM_DATA_DIR}/ca.pem:/certs/kanidm-ca.pem:ro
     networks:
       - kanidm-net
 

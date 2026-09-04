@@ -733,63 +733,78 @@ def kanidm_cli_volume_mounts(data_dir: str | Path) -> list[str]:
     ]
 
 
-def tls_cert_is_ca(chain: Path) -> bool:
-    """True when the certificate carries basicConstraints CA:TRUE (legacy generator output)."""
-    result = subprocess.run(
-        ["openssl", "x509", "-in", str(chain), "-noout", "-text"],
-        check=False,
-        capture_output=True,
-    )
-    return b"CA:TRUE" in result.stdout
-
-
 def generate_tls_material(data_dir: Path, domain: str) -> bool:
-    """Ensure an end-entity TLS certificate exists. Returns True when files were replaced.
+    """Ensure a local-CA-signed server certificate exists. Returns True when replaced.
 
-    rustls-based clients reject CA:TRUE certificates presented as server certificates,
-    so the generator pins basicConstraints CA:FALSE and regenerates legacy output.
+    Kanidm's TLS material is a two-tier setup: a long-lived local CA (ca.pem +
+    ca-key.pem) signs the server certificate (key.pem; chain.pem carries the leaf
+    plus the CA so the full chain is served). Clients that verify strictly trust
+    the CA — rustls rejects both self-signed end-entity certificates used as
+    their own anchor (UnknownIssuer) and CA:TRUE certificates presented as a
+    server certificate (CaUsedAsEndEntity), so only this shape is portable.
     """
+    ca = data_dir / "ca.pem"
+    ca_key = data_dir / "ca-key.pem"
     chain = data_dir / "chain.pem"
     key = data_dir / "key.pem"
-    regenerated = False
-    if chain.is_file() and key.is_file() and chain.stat().st_size > 0:
-        if not tls_cert_is_ca(chain):
-            return False
-        print(
-            "Regenerating Kanidm TLS certificate: the existing certificate is a CA "
-            "certificate (basicConstraints CA:TRUE), which rustls-based clients reject "
-            "as a server certificate. Kanidm will be restarted to load the new one.",
+    had_server_cert = chain.is_file() and key.is_file() and chain.stat().st_size > 0
+
+    if not (ca.is_file() and ca_key.is_file()):
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256",
+                "-days", "3650", "-nodes",
+                "-keyout", str(ca_key), "-out", str(ca),
+                "-subj", "/CN=kanidm-easy-deploy local CA",
+            ],
+            check=True,
+            capture_output=True,
         )
-        regenerated = True
+        ca.chmod(0o644)
+        ca_key.chmod(0o600)
+
+    trusted = False
+    if had_server_cert:
+        trusted = (
+            subprocess.run(
+                ["openssl", "verify", "-CAfile", str(ca), str(chain)],
+                check=False,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+    if had_server_cert and trusted:
+        return False
+
     hostfs.ensure_writable_directory(data_dir)
+    csr = data_dir / "kanidm-leaf.csr"
+    ext = data_dir / "kanidm-leaf.ext"
     subprocess.run(
         [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-sha256",
-            "-days",
-            "3650",
-            "-nodes",
-            "-keyout",
-            str(key),
-            "-out",
-            str(chain),
-            "-subj",
-            f"/CN={domain}",
-            "-addext",
-            f"subjectAltName=DNS:{domain},DNS:kanidm,DNS:localhost,IP:127.0.0.1",
-            "-addext",
-            "basicConstraints=critical,CA:FALSE",
+            "openssl", "req", "-new", "-newkey", "rsa:2048", "-sha256", "-nodes",
+            "-keyout", str(key), "-out", str(csr), "-subj", f"/CN={domain}",
         ],
         check=True,
         capture_output=True,
     )
+    ext.write_text(
+        f"subjectAltName=DNS:{domain},DNS:kanidm,DNS:localhost,IP:127.0.0.1\n"
+        "basicConstraints=critical,CA:FALSE\n"
+    )
+    subprocess.run(
+        [
+            "openssl", "x509", "-req", "-sha256", "-days", "3650",
+            "-in", str(csr), "-CA", str(ca), "-CAkey", str(ca_key),
+            "-CAcreateserial", "-extfile", str(ext), "-out", str(chain),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    csr.unlink(missing_ok=True)
+    ext.unlink(missing_ok=True)
     key.chmod(0o600)
     chain.chmod(0o644)
-    return regenerated
+    return had_server_cert
 
 
 def kanidm_portal_caddy_block(domain: str) -> str:
