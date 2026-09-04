@@ -1026,3 +1026,21 @@ def test_generate_tls_material_keeps_existing_trusted_certificate(tmp_path: Path
     before = (tmp_path / "chain.pem").read_bytes()
     assert generate_tls_material(tmp_path, "idm.test.example") is False
     assert (tmp_path / "chain.pem").read_bytes() == before
+
+
+def test_admin_ui_secret_gaps_reports_missing_values():
+    from scripts.apply import admin_ui_secret_gaps
+
+    complete = {
+        "ADMIN_UI_API_TOKEN": "token",
+        "ADMIN_UI_COOKIE_SECRET": "cookie",
+        "OIDC_SECRET_KANIDM_ADMIN_UI": "secret",
+    }
+    assert admin_ui_secret_gaps(complete) == []
+    gaps = admin_ui_secret_gaps({"ADMIN_UI_API_TOKEN": "token"})
+    assert gaps == ["ADMIN_UI_COOKIE_SECRET", "ADMIN_UI_OIDC_SECRET"]
+    assert admin_ui_secret_gaps({"ADMIN_UI_API_TOKEN": ""}) == [
+        "ADMIN_UI_API_TOKEN",
+        "ADMIN_UI_COOKIE_SECRET",
+        "ADMIN_UI_OIDC_SECRET",
+    ]

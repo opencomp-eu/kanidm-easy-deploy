@@ -1956,11 +1956,30 @@ def reconcile_runtime(skip_pull: bool = False, tls_regenerated: bool = False) ->
         # The OIDC client secret and API token only exist after bootstrap; re-render
         # compose.env and recreate admin-ui so the container runs with real values.
         write_compose_env(config, secrets)
+        missing = admin_ui_secret_gaps(secrets)
+        if missing:
+            raise RuntimeError(
+                "Admin UI is enabled but these secrets are missing after bootstrap: "
+                + ", ".join(missing)
+                + ". The OIDC client secret is fetched from the kanidm_admin_ui "
+                "client while registering it — check the apply output above for OIDC "
+                "client errors, then re-run bash apply.sh."
+            )
         if tls_regenerated:
             # admin-ui caches the CA file at startup; recreate it after a cert change.
             run_compose("up", "-d", "--remove-orphans", "--force-recreate", "admin-ui")
         else:
             run_compose("up", "-d", "--remove-orphans")
+
+
+def admin_ui_secret_gaps(secrets: dict) -> list[str]:
+    """Admin UI env values that are still missing after bootstrap."""
+    required = {
+        "ADMIN_UI_API_TOKEN": secrets.get("ADMIN_UI_API_TOKEN"),
+        "ADMIN_UI_COOKIE_SECRET": secrets.get("ADMIN_UI_COOKIE_SECRET"),
+        "ADMIN_UI_OIDC_SECRET": secrets.get(f"OIDC_SECRET_{ADMIN_UI_CLIENT_ID.upper()}"),
+    }
+    return [name for name, value in required.items() if not str(value or "").strip()]
 
 
 def print_summary(config: dict, secrets: dict) -> None:
