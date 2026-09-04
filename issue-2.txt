@@ -1,0 +1,55 @@
+## Title
+
+v0.1.1 authorize redirect is missing the mandatory `client_id` query parameter — Kanidm returns 400 "missing field `client_id`"
+
+## Body
+
+Regression in v0.1.1: OIDC login now redirects to Kanidm's real `/oauth2/authorise` endpoint (the v0.1.1 URL fix works), but the authorization request has no `client_id` in the query string, so Kanidm rejects it before showing the login page:
+
+```
+GET https://auth.example.com/oauth2/authorise?response_type=code&scope=openid+email+profile&redirect_uri=https%3A%2F%2Fadmin.example.com%2Fapi%2Fauth%2Fcallback&state=...&nonce=...&code_challenge=...&code_challenge_method=S256
+
+→ 400: Failed to deserialize query string: missing field `client_id`
+```
+
+### Cause
+
+`src/auth.rs:330-337` builds the redirect without it:
+
+```rust
+let redirect = format!(
+    "{}?response_type=code&scope=openid+email+profile&redirect_uri={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+    oidc.authorize_url,
+    urlencoding::encode(&oidc.redirect_url),
+    urlencoding::encode(&flow.state),
+    urlencoding::encode(&flow.nonce),
+    urlencoding::encode(&pkce_challenge(&flow.code_verifier)),
+);
+```
+
+`client_id` is mandatory in the redirect-based flow (RFC 6749 §4.1.1 — the browser redirect cannot authenticate via Basic auth, so the client must identify itself in the query). Kanidm deserializes the query into `AuthorisationRequest` (`kanidm_proto/src/oauth2.rs:44-66` at v1.11.1) where `client_id: String` is required — everything else the app sends (`response_type`, `redirect_uri`, `scope`, `state`, `nonce`, `code_challenge`, `code_challenge_method`) is present and valid, so `client_id` is the only gap.
+
+v0.1.0 effectively had `client_id` in the URL as a path segment of its (wrong) authorize path; when v0.1.1 rebuilt the URL against the real endpoint, the parameter was dropped entirely.
+
+### Fix
+
+Append the client id to the query in `login_handler`:
+
+```rust
+let redirect = format!(
+    "{}?response_type=code&client_id={}&scope=openid+email+profile&redirect_uri={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+    oidc.authorize_url,
+    urlencoding::encode(&oidc.client_id),
+    urlencoding::encode(&oidc.redirect_url),
+    urlencoding::encode(&flow.state),
+    urlencoding::encode(&flow.nonce),
+    urlencoding::encode(&pkce_challenge(&flow.code_verifier)),
+);
+```
+
+`oidc.client_id` is already in scope (it's used for the token exchange at `src/auth.rs:397`). With that one line, the flow reaches the Kanidm login page; I verified the remaining parameters against `AuthorisationRequest` at v1.11.1 and they all deserialize cleanly (the `+`-separated scope string decodes as the space-separated set Kanidm expects).
+
+### Environment
+
+- kanidm-admin-ui `ghcr.io/opencomp-eu/kanidm-admin-ui:v0.1.1`
+- Kanidm 1.11.1, confidential client with PKCE + client_secret_post

@@ -733,11 +733,34 @@ def kanidm_cli_volume_mounts(data_dir: str | Path) -> list[str]:
     ]
 
 
-def generate_tls_material(data_dir: Path, domain: str) -> None:
+def tls_cert_is_ca(chain: Path) -> bool:
+    """True when the certificate carries basicConstraints CA:TRUE (legacy generator output)."""
+    result = subprocess.run(
+        ["openssl", "x509", "-in", str(chain), "-noout", "-text"],
+        check=False,
+        capture_output=True,
+    )
+    return b"CA:TRUE" in result.stdout
+
+
+def generate_tls_material(data_dir: Path, domain: str) -> bool:
+    """Ensure an end-entity TLS certificate exists. Returns True when files were replaced.
+
+    rustls-based clients reject CA:TRUE certificates presented as server certificates,
+    so the generator pins basicConstraints CA:FALSE and regenerates legacy output.
+    """
     chain = data_dir / "chain.pem"
     key = data_dir / "key.pem"
+    regenerated = False
     if chain.is_file() and key.is_file() and chain.stat().st_size > 0:
-        return
+        if not tls_cert_is_ca(chain):
+            return False
+        print(
+            "Regenerating Kanidm TLS certificate: the existing certificate is a CA "
+            "certificate (basicConstraints CA:TRUE), which rustls-based clients reject "
+            "as a server certificate. Kanidm will be restarted to load the new one.",
+        )
+        regenerated = True
     hostfs.ensure_writable_directory(data_dir)
     subprocess.run(
         [
@@ -758,12 +781,15 @@ def generate_tls_material(data_dir: Path, domain: str) -> None:
             f"/CN={domain}",
             "-addext",
             f"subjectAltName=DNS:{domain},DNS:kanidm,DNS:localhost,IP:127.0.0.1",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
         ],
         check=True,
         capture_output=True,
     )
     key.chmod(0o600)
     chain.chmod(0o644)
+    return regenerated
 
 
 def kanidm_portal_caddy_block(domain: str) -> str:
@@ -855,10 +881,10 @@ def write_compose_env(config: dict, secrets: dict) -> None:
     COMPOSE_ENV_PATH.chmod(0o600)
 
 
-def render_runtime_artifacts(config: dict, secrets: dict) -> None:
+def render_runtime_artifacts(config: dict, secrets: dict) -> bool:
     kanidm = config["kanidm"]
     data_dir = hostfs.ensure_writable_directory(kanidm["data_dir"])
-    generate_tls_material(data_dir, str(kanidm["domain"]))
+    tls_regenerated = generate_tls_material(data_dir, str(kanidm["domain"]))
     (data_dir / "server.toml").write_text(build_server_toml(config))
     client_config = build_client_toml(str(kanidm["domain"]))
     kanidm_client_config_path(data_dir).write_text(client_config)
@@ -1886,7 +1912,7 @@ def write_stalwart_identity_secrets(secrets: dict) -> None:
     write_sidecar(sibling, existing)
 
 
-def reconcile_runtime(skip_pull: bool = False) -> None:
+def reconcile_runtime(skip_pull: bool = False, tls_regenerated: bool = False) -> None:
     config = load_config()
     secrets = load_yaml(SECRETS_PATH)
     mode = proxy_mode(config)
@@ -1906,12 +1932,20 @@ def reconcile_runtime(skip_pull: bool = False) -> None:
         run_compose("pull")
     print("Starting Kanidm stack…")
     start_kanidm_stack()
+    if tls_regenerated:
+        print("Restarting kanidm to load the regenerated TLS certificate…")
+        subprocess.run(["docker", "restart", "kanidm"], check=True)
+        wait_for_kanidm_ready()
     bootstrap_identity(config, secrets)
     if admin_ui_enabled(config):
         # The OIDC client secret and API token only exist after bootstrap; re-render
         # compose.env and recreate admin-ui so the container runs with real values.
         write_compose_env(config, secrets)
-        run_compose("up", "-d", "--remove-orphans")
+        if tls_regenerated:
+            # admin-ui caches the CA file at startup; recreate it after a cert change.
+            run_compose("up", "-d", "--remove-orphans", "--force-recreate", "admin-ui")
+        else:
+            run_compose("up", "-d", "--remove-orphans")
 
 
 def print_summary(config: dict, secrets: dict) -> None:
@@ -1955,9 +1989,15 @@ def apply_configuration(*, skip_runtime: bool = False, skip_pull: bool = False) 
     config = load_config()
     validate_config(config)
     secrets = load_or_create_secrets()
-    render_runtime_artifacts(config, secrets)
+    tls_regenerated = render_runtime_artifacts(config, secrets)
     if not skip_runtime:
-        reconcile_runtime(skip_pull=skip_pull)
+        reconcile_runtime(skip_pull=skip_pull, tls_regenerated=tls_regenerated)
+    elif tls_regenerated:
+        print(
+            "Warning: TLS material was regenerated; run a full apply (or bash start.sh) "
+            "so kanidm and the admin-ui load the new certificate.",
+            file=sys.stderr,
+        )
     print_summary(config, secrets)
 
 

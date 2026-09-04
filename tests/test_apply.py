@@ -964,3 +964,51 @@ def test_disabled_admin_ui_client_is_removed_as_stale(tmp_path, monkeypatch):
     remove_stale_oauth2_clients({"opencloud", "stalwart-webui"})
     assert not (clients_dir / "kanidm_admin_ui.yaml").exists()
     assert ("system", "oauth2", "delete", "kanidm_admin_ui", "--name", "idm_admin") in calls
+
+
+def _write_legacy_ca_certificate(tmp_path: Path) -> None:
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "30",
+            "-nodes",
+            "-keyout", str(tmp_path / "key.pem"),
+            "-out", str(tmp_path / "chain.pem"),
+            "-subj", "/CN=idm.test.example",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_generate_tls_material_creates_end_entity_certificate(tmp_path: Path):
+    from scripts.apply import generate_tls_material, tls_cert_is_ca
+
+    assert generate_tls_material(tmp_path, "idm.test.example") is False
+    text = subprocess.run(
+        ["openssl", "x509", "-in", str(tmp_path / "chain.pem"), "-noout", "-text"],
+        check=True,
+        capture_output=True,
+    ).stdout.decode()
+    assert "CA:FALSE" in text
+    assert "DNS:kanidm" in text
+    assert "DNS:idm.test.example" in text
+    assert not tls_cert_is_ca(tmp_path / "chain.pem")
+
+
+def test_generate_tls_material_regenerates_legacy_ca_certificate(tmp_path: Path):
+    from scripts.apply import generate_tls_material, tls_cert_is_ca
+
+    _write_legacy_ca_certificate(tmp_path)
+    assert tls_cert_is_ca(tmp_path / "chain.pem")
+    assert generate_tls_material(tmp_path, "idm.test.example") is True
+    assert not tls_cert_is_ca(tmp_path / "chain.pem")
+
+
+def test_generate_tls_material_keeps_existing_end_entity_certificate(tmp_path: Path):
+    from scripts.apply import generate_tls_material
+
+    assert generate_tls_material(tmp_path, "idm.test.example") is False
+    before = (tmp_path / "chain.pem").read_bytes()
+    assert generate_tls_material(tmp_path, "idm.test.example") is False
+    assert (tmp_path / "chain.pem").read_bytes() == before

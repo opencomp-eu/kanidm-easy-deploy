@@ -1,0 +1,56 @@
+## Title
+
+Authorize redirect must use Kanidm's browser `authorization_endpoint` (`/ui/oauth2`), not the `/oauth2/authorise` API — users without a live session get 401 NotAuthenticated
+
+## Body
+
+With v0.1.1 + the `client_id` fix, the login redirect now reaches Kanidm's authorize endpoint, but any user who does not already have a live Kanidm session in that browser gets:
+
+```
+GET https://auth.example.com/oauth2/authorise?response_type=code&client_id=kanidm_admin_ui&scope=openid email profile&redirect_uri=https%3A%2F%2Fadmin.example.com%2Fapi%2Fauth%2Fcallback&state=...&code_challenge=...&code_challenge_method=S256
+
+→ 401 Unauthorized
+kanidm log: handle_oauth2_authorise → Invalid identity: NotAuthenticated
+```
+
+### Cause
+
+`/oauth2/authorise` is not a browser entry point — it is the JSON API that Kanidm's own web UI drives. In Kanidm v1.11.1 (`server/core/src/https/oauth2.rs`):
+
+- A session-less request returns `OperationError::NotAuthenticated`, which the handler maps to a bare 401 **by design** — the code explicitly refuses to redirect to the calling application on error, citing the Proofpoint analysis of OAuth redirect attacks.
+- Even with a live session, the consent step returns a **JSON** `ConsentRequested` payload (HTTP 200), not an HTML page — only previously-consented sessions get the 302 straight to the callback. So plain redirects to `/oauth2/authorise` cannot ever complete a first-time login.
+
+The browser-facing authorization endpoint is Kanidm's `/ui/oauth2` SPA route. Kanidm's own discovery document says so — from a live 1.11.1 server:
+
+```
+$ curl https://auth.example.com/oauth2/openid/kanidm_admin_ui/.well-known/openid-configuration
+{
+  "issuer": "https://auth.example.com/oauth2/openid/kanidm_admin_ui",
+  "authorization_endpoint": "https://auth.example.com/ui/oauth2",
+  "token_endpoint": "https://auth.example.com/oauth2/token",
+  ...
+}
+```
+
+`/ui/oauth2` accepts the exact same query parameters the app already sends (`views/oauth2.rs` deserializes `Query<AuthorisationRequest>`, stashes it in a signed cookie, walks the user through login → consent, then 302s to `redirect_uri` with the code). The token endpoint (`/oauth2/token`) the app uses is correct — that one genuinely is a machine endpoint.
+
+### Fix
+
+This is the second bug caused by pinning Kanidm endpoint constants instead of reading discovery (`/oauth2/authorise` vs `/authorize` was the first). Please fetch `{issuer}/.well-known/openid-configuration` once at startup and use `authorization_endpoint` (and ideally `token_endpoint`) from it for the browser redirect:
+
+```rust
+// OidcState::new
+let discovery: serde_json::Value = http
+    .get(format!("{issuer_url}/.well-known/openid-configuration"))
+    .send().await?...
+let authorize_url = discovery["authorization_endpoint"].as_str()
+    .with_context(|| "discovery is missing authorization_endpoint")?
+    .to_string();
+```
+
+Minimal alternative if discovery stays out of scope: change the pinned authorize path from `{origin}/oauth2/authorise` to `{origin}/ui/oauth2`. All existing query parameters can stay as they are.
+
+### Environment
+
+- kanidm-admin-ui `ghcr.io/opencomp-eu/kanidm-admin-ui` (v0.1.1 + client_id fix)
+- Kanidm 1.11.1, confidential client with PKCE + client_secret_post
