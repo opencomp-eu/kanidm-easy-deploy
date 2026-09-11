@@ -65,3 +65,31 @@ admin_ui:
   # image: ghcr.io/opencomp-eu/kanidm-admin-ui
   # tag: v0.1.1
   # admin_group: idm_admins            # group whose members may log in
+# Optional Borg backups (local directory or SFTP off-site repository).
+# Kanidm's embedded database is file-based: prefer 'bash backup.sh --cold'
+# for scheduled runs so the data dir is captured while the stack is stopped.
+backup:
+  enabled: false
+  repository:
+    # type: local — repository on this VPS
+    type: local
+    path: /var/backups/kanidm
+    encryption: repokey
+
+    # type: sftp — incremental off-site backups (recommended for crash recovery)
+    # type: sftp
+    # host: backup.example.com
+    # user: borg
+    # path: /repos/kanidm
+    # port: 22
+    # ssh_key_path: /root/.ssh/borg_backup
+    # host_key_check: true
+  schedule:
+    enabled: false
+    calendar: "*-*-* 03:00:00"
+    persistent: true
+  retention:
+    keep_daily: 7
+    keep_weekly: 4
+    keep_monthly: 6
+    keep_yearly: 0

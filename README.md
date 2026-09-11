@@ -121,12 +121,36 @@ bash start.sh              # compose up (via apply, skip pull)
 bash stop.sh               # compose down
 ```
 
-## Backups
+## Backups & restore
 
-Back up:
+Backups use Borg/Borgmatic via the shared easydeploy-lib pipeline and cover `deploy.yaml`, `.kanidm-easy-deploy/`, and `kanidm.data_dir`. Enable them in `deploy.yaml`:
 
-- `kanidm.data_dir` (database, TLS, `server.toml`)
-- `.kanidm-easy-deploy/secrets.yaml`
+```yaml
+backup:
+  enabled: true
+  repository:
+    type: local              # or sftp: host/user/path/ssh_key_path — see deploy.yaml.example
+    path: /var/backups/kanidm
+  schedule:
+    enabled: true
+    calendar: "*-*-* 03:00:00"
+```
+
+`bash apply.sh` generates `BORG_PASSPHRASE` in `.kanidm-easy-deploy/secrets.yaml` (keep a copy off-site) and reconciles the `kanidm-easy-deploy-backup` systemd timer. The timer runs `backup.sh` without `--cold`; for fully consistent snapshots of Kanidm's embedded LMDB database, run `bash backup.sh --cold` (brief outage) or stop the stack manually first.
+
+```bash
+bash backup.sh                      # archive + prune + check
+bash backup.sh --cold               # stop stack -> backup -> restart
+bash backup.sh --list               # list archives
+bash backup.sh --export /tmp/k.tar.gz [--encrypt]          # portable archive
+bash backup.sh --schedule           # (re)apply the systemd timer
+bash restore.sh --latest --yes      # restore newest Borg archive
+bash restore.sh --archive <name> [--keep-stopped]
+bash restore.sh --file /tmp/k.tar.gz.age --encrypt --yes   # restore portable file
+bash bootstrap-from-backup.sh /tmp/k.tar.gz --yes          # fresh VPS: deps + restore
+```
+
+A restore overwrites `deploy.yaml`, `.kanidm-easy-deploy/`, and the data dir, re-runs `apply.sh`, and restarts the stack.
 
 ## Development
 

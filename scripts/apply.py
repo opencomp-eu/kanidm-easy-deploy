@@ -25,6 +25,9 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "easydeploy-lib" / "python"))
 import hostfs  # noqa: E402
+from backup_config import load_backup_settings  # noqa: E402
+from backup_plan import load_plan  # noqa: E402
+from backup_schedule import reconcile as reconcile_backup_timer  # noqa: E402
 
 COMPOSE_DIR = PROJECT_ROOT / "compose"
 COMPOSE_PROJECT_NAME = "kanidm-easy-deploy"
@@ -646,12 +649,22 @@ def derive_compose_files(config: dict) -> list[str]:
     return files
 
 
-def load_or_create_secrets() -> dict:
+def backup_secret_keys(config: dict) -> tuple[str, ...]:
+    """BORG_PASSPHRASE lives in secrets.yaml when backups are enabled (shared contract v1)."""
+    backup = config.get("backup")
+    if isinstance(backup, dict) and to_bool(backup.get("enabled")):
+        return ("BORG_PASSPHRASE",)
+    return ()
+
+
+def load_or_create_secrets(config: dict | None = None) -> dict:
+    if config is None:
+        config = {}
     if SECRETS_PATH.is_file():
         data = load_yaml(SECRETS_PATH)
     else:
         data = {}
-    for key in SECRET_KEYS:
+    for key in SECRET_KEYS + backup_secret_keys(config):
         if key not in data or not str(data.get(key) or "").strip():
             data[key] = secrets.token_urlsafe(16 if key == "ADMIN_PASSWORD" else 24)
     save_yaml(SECRETS_PATH, data)
@@ -2019,10 +2032,24 @@ def print_summary(config: dict, secrets: dict) -> None:
     print()
 
 
+def validate_backup_config(config_path: Path = DEPLOY_PATH) -> None:
+    """Surface shared backup: block validation errors (easydeploy-lib backup_config)."""
+    if not config_path.exists():
+        return
+    load_backup_settings(config_path)
+
+
+def reconcile_backup_schedule() -> str:
+    """Keep the automatic backup systemd timer in sync with deploy.yaml."""
+    plan = load_plan(PROJECT_ROOT)
+    return reconcile_backup_timer(PROJECT_ROOT, DEPLOY_PATH, plan["timer_name"])
+
+
 def apply_configuration(*, skip_runtime: bool = False, skip_pull: bool = False) -> None:
     config = load_config()
     validate_config(config)
-    secrets = load_or_create_secrets()
+    validate_backup_config()
+    secrets = load_or_create_secrets(config)
     tls_regenerated = render_runtime_artifacts(config, secrets)
     if not skip_runtime:
         reconcile_runtime(skip_pull=skip_pull, tls_regenerated=tls_regenerated)
@@ -2033,6 +2060,7 @@ def apply_configuration(*, skip_runtime: bool = False, skip_pull: bool = False) 
             file=sys.stderr,
         )
     print_summary(config, secrets)
+    print(f"Backup schedule: {reconcile_backup_schedule()}")
 
 
 def main() -> None:
