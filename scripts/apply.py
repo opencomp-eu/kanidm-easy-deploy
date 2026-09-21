@@ -2061,6 +2061,10 @@ def apply_configuration(*, skip_runtime: bool = False, skip_pull: bool = False) 
             file=sys.stderr,
         )
     schedule = reconcile_backup_schedule()
+    if not skip_runtime:
+        from scripts.update import record_current_lock
+
+        record_current_lock()
     if not edlog.is_quiet():
         print_summary(config, secrets)
         print(f"Backup schedule: {schedule}")

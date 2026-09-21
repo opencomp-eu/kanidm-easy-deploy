@@ -114,6 +114,8 @@ Portal **logo** images must be PNG, JPG, GIF, SVG, or WebP and under 256 KB (Kan
 ```bash
 bash apply.sh              # re-render config and reconcile stack
 bash apply.sh --skip-runtime   # render only, no docker
+bash update.sh             # git pull + images; prints "Nothing to update" if unchanged
+bash update.sh --force     # ignore update.lock and always apply
 bash kanidm-cli.sh login --name idm_admin   # CLI admin (after apply)
 bash user.sh create alice "Alice Example" --email alice@example.com
 bash user.sh reset alice   # issue a new one-time credential reset link
