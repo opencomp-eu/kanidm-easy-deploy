@@ -25,6 +25,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "easydeploy-lib" / "python"))
 import hostfs  # noqa: E402
+import edlog  # noqa: E402
 from backup_config import load_backup_settings  # noqa: E402
 from backup_plan import load_plan  # noqa: E402
 from backup_schedule import reconcile as reconcile_backup_timer  # noqa: E402
@@ -2059,8 +2060,10 @@ def apply_configuration(*, skip_runtime: bool = False, skip_pull: bool = False) 
             "so kanidm and the admin-ui load the new certificate.",
             file=sys.stderr,
         )
-    print_summary(config, secrets)
-    print(f"Backup schedule: {reconcile_backup_schedule()}")
+    schedule = reconcile_backup_schedule()
+    if not edlog.is_quiet():
+        print_summary(config, secrets)
+        print(f"Backup schedule: {schedule}")
 
 
 def main() -> None:
