@@ -96,12 +96,6 @@ require_command() {
 	command -v "$cmd" &>/dev/null || die "Required command not found: ${cmd}"
 }
 
-ensure_local_repo_dir() {
-	[[ "${BACKUP_REPO_TYPE}" == "local" ]] || return 0
-	mkdir -p "${BACKUP_REPO_PATH}"
-	chmod 700 "${BACKUP_REPO_PATH}" 2>/dev/null || true
-}
-
 list_archives() {
 	info "Listing backup archives from ${BACKUP_REPO_URL}..."
 	easydeploy_backup_list_archives "${BACKUP_REPO_URL}"
@@ -129,7 +123,6 @@ run_full_backup() {
 		return 0
 	fi
 
-	ensure_local_repo_dir
 	easydeploy_backup_write_borgmatic_config "${BORG_CONFIG_PATH}" "${BACKUP_REPO_URL}" "${BACKUP_STAGING_CURRENT}" "${archive_prefix}"
 	easydeploy_backup_repo_create "${BORG_CONFIG_PATH}"
 

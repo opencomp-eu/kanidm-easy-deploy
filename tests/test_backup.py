@@ -177,6 +177,14 @@ def _run_script(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_backup_sh_defers_local_repo_creation_to_shared_lib():
+    text = (PROJECT_ROOT / "backup.sh").read_text()
+
+    assert "ensure_local_repo_dir" not in text
+    assert 'mkdir -p "${BACKUP_REPO_PATH}"' not in text
+    assert "easydeploy_backup_repo_create" in text
+
+
 def test_backup_sh_help_exits_zero():
     result = _run_script("backup.sh", "--help")
 
