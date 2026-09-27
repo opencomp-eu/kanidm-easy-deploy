@@ -40,6 +40,7 @@ CADDY_TEMPLATE = PROJECT_ROOT / "caddy" / "Caddyfile.template"
 CADDYFILE = PROJECT_ROOT / "caddy" / "Caddyfile"
 INTEGRATION_DIR = STATE_DIR / "integration"
 INTEGRATION_CADDY_FRAGMENT = INTEGRATION_DIR / "caddy.caddy"
+EMBED_SIDECAR = INTEGRATION_DIR / "embed.yaml"
 DEFAULT_INTEGRATE_NETWORK = "easydeploy-net"
 DEFAULT_KANIDM_TAG = "1.11.1"
 DEFAULT_LOGO_PATH = PROJECT_ROOT / "assets" / "branding" / "default-logo.svg"
@@ -132,7 +133,9 @@ def load_config(path: Path = DEPLOY_PATH) -> dict:
         raise FileNotFoundError(
             f"Missing {path.name}. Copy deploy.yaml.example to deploy.yaml or run wizard.sh."
         )
-    return load_yaml(path)
+    config = load_yaml(path)
+    apply_engine_embed_sidecar(config)
+    return config
 
 
 def validate_config(config: dict) -> None:
@@ -171,6 +174,17 @@ def validate_config(config: dict) -> None:
             raise ValueError(
                 "admin_ui.domain must differ from kanidm.domain; both would claim the same Caddy site"
             )
+
+    embed = config.get("embed")
+    if embed is not None:
+        if not isinstance(embed, dict):
+            raise ValueError("embed must be a mapping")
+        ancestors = embed.get("frame_ancestors")
+        if ancestors is not None:
+            if isinstance(ancestors, str):
+                ancestors = [ancestors]
+            if not isinstance(ancestors, list) or any(not str(item or "").strip() for item in ancestors):
+                raise ValueError("embed.frame_ancestors must be a list of hostnames or https origins")
     proxy_mode(config)
 
 
@@ -821,7 +835,102 @@ def generate_tls_material(data_dir: Path, domain: str) -> bool:
     return had_server_cert
 
 
-def kanidm_portal_caddy_block(domain: str) -> str:
+def https_origin(value: Any) -> str:
+    """Normalize a hostname or URL to `https://host`."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        scheme, rest = text.split("://", 1)
+        if scheme.lower() not in {"http", "https"}:
+            return ""
+        host = rest.split("/")[0].split("?")[0].split("#")[0].strip().lower()
+    else:
+        host = text.split("/")[0].split("?")[0].split("#")[0].strip().lower()
+    if not host or any(char in host for char in " @\\"):
+        return ""
+    return f"https://{host}"
+
+
+def unique_https_origins(values: Any) -> list[str]:
+    origins: list[str] = []
+    seen: set[str] = set()
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return origins
+    for item in values:
+        origin = https_origin(item)
+        if origin and origin not in seen:
+            seen.add(origin)
+            origins.append(origin)
+    return origins
+
+
+def apply_engine_embed_sidecar(config: dict, sidecar_path: Path | None = None) -> None:
+    """Merge parents allowed to iframe the login UI (Bulwark webmail)."""
+    path = sidecar_path or EMBED_SIDECAR
+    embed = config.get("embed")
+    if embed is None:
+        embed = {}
+    elif not isinstance(embed, dict):
+        return
+    if managed_is_false(embed):
+        return
+    extra: list[Any] = []
+    if path.is_file():
+        sidecar = load_yaml(path)
+        if isinstance(sidecar, dict):
+            extra = sidecar.get("frame_ancestors") or []
+    current = embed.get("frame_ancestors") or []
+    merged = unique_https_origins(list(current) + list(extra))
+    if merged:
+        target = config.setdefault("embed", {})
+        if isinstance(target, dict):
+            target["frame_ancestors"] = merged
+
+
+def embed_frame_ancestors(config: dict) -> list[str]:
+    embed = config.get("embed") or {}
+    if not isinstance(embed, dict):
+        return []
+    self_origin = https_origin((config.get("kanidm") or {}).get("domain"))
+    return [origin for origin in unique_https_origins(embed.get("frame_ancestors")) if origin != self_origin]
+
+
+def _site_label(host: str) -> str:
+    """Registrable-domain guess (last two labels) for a same-site CORP decision."""
+    labels = [label for label in host.lower().split(".") if label]
+    if len(labels) >= 2:
+        return ".".join(labels[-2:])
+    return ".".join(labels)
+
+
+def corp_for_frame_ancestors(domain: str, ancestors: list[str]) -> str:
+    """CORP value that still lets the configured parents embed the login page."""
+    site = _site_label(str(domain).split("/")[0])
+    for origin in ancestors:
+        host = origin.removeprefix("https://").split("/")[0]
+        if _site_label(host) != site:
+            return "cross-origin"
+    return "same-site"
+
+
+def kanidm_portal_caddy_block(domain: str, frame_ancestors: list[str] | None = None) -> str:
+    ancestors = [item for item in (frame_ancestors or []) if item]
+    framing = ""
+    if ancestors:
+        policy = " ".join(["'self'", *ancestors])
+        corp = corp_for_frame_ancestors(domain, ancestors)
+        # Kanidm sends frame-ancestors 'none' (twice) and CORP same-origin, so a
+        # webmail iframe cannot show the OAuth login. Relax both only for the
+        # parents this install explicitly allows.
+        framing = (
+            "\n"
+            '        header_down Content-Security-Policy "frame-ancestors \'none\'" '
+            f'"frame-ancestors {policy}"\n'
+            f"        header_down Cross-Origin-Resource-Policy {corp}"
+        )
     return f"""# kanidm-easy-deploy — identity portal
 {domain} {{
     reverse_proxy https://kanidm:8443 {{
@@ -833,7 +942,7 @@ def kanidm_portal_caddy_block(domain: str) -> str:
         header_up X-Forwarded-Proto {{scheme}}
         # Kanidm 1.7.x rejects malformed X-Forwarded-For; use the proxy TCP
         # address instead (trust_x_forward_for = false in server.toml).
-        header_up -X-Forwarded-For
+        header_up -X-Forwarded-For{framing}
     }}
     encode gzip
     log
@@ -851,7 +960,7 @@ def admin_ui_caddy_block(domain: str) -> str:
 
 def render_caddyfile(config: dict) -> None:
     domain = str(config["kanidm"]["domain"])
-    block = kanidm_portal_caddy_block(domain)
+    block = kanidm_portal_caddy_block(domain, embed_frame_ancestors(config))
     rendered = render_template(
         CADDY_TEMPLATE.read_text(),
         {
@@ -870,7 +979,7 @@ def render_caddyfile(config: dict) -> None:
 def render_integration_fragment(config: dict) -> None:
     domain = str(config["kanidm"]["domain"])
     INTEGRATION_DIR.mkdir(parents=True, exist_ok=True)
-    fragment = kanidm_portal_caddy_block(domain)
+    fragment = kanidm_portal_caddy_block(domain, embed_frame_ancestors(config))
     if admin_ui_enabled(config):
         fragment += "\n" + admin_ui_caddy_block(admin_ui_domain(config))
     INTEGRATION_CADDY_FRAGMENT.write_text(fragment + "\n")

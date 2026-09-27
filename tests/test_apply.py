@@ -45,6 +45,9 @@ from scripts.apply import (
     kanidm_client_config_path,
     kanidm_issuer_url,
     kanidm_origin,
+    apply_engine_embed_sidecar,
+    corp_for_frame_ancestors,
+    embed_frame_ancestors,
     kanidm_portal_caddy_block,
     kanidm_tokens_path,
     ldap_base_dn,
@@ -199,6 +202,48 @@ def test_caddy_block_proxies_https_to_kanidm():
     assert "tls_insecure_skip_verify" in block
     assert "header_up -X-Forwarded-For" in block
     assert "X-Forwarded-For {{remote" not in block
+    assert "frame-ancestors" not in block
+    assert "Cross-Origin-Resource-Policy" not in block
+
+
+def test_caddy_block_allows_webmail_to_frame_login():
+    block = kanidm_portal_caddy_block(
+        "auth.opencomp.eu",
+        ["https://webmail.opencomp.eu"],
+    )
+    assert "frame-ancestors 'none'" in block
+    assert "frame-ancestors 'self' https://webmail.opencomp.eu" in block
+    assert "Cross-Origin-Resource-Policy same-site" in block
+    assert corp_for_frame_ancestors(
+        "auth.opencomp.eu",
+        ["https://webmail.opencomp.eu"],
+    ) == "same-site"
+    assert corp_for_frame_ancestors(
+        "idm.test.example",
+        ["https://portal.other.example"],
+    ) == "cross-origin"
+
+
+def test_embed_sidecar_merges_webmail_parent(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    sidecar = tmp_path / "embed.yaml"
+    sidecar.write_text("frame_ancestors:\n  - https://webmail.test.example\n")
+    monkeypatch.setattr(apply_module, "EMBED_SIDECAR", sidecar)
+    config = {"kanidm": {"domain": "idm.test.example"}, "embed": {"frame_ancestors": ["portal.test.example"]}}
+    apply_engine_embed_sidecar(config, sidecar)
+    assert embed_frame_ancestors(config) == [
+        "https://portal.test.example",
+        "https://webmail.test.example",
+    ]
+
+
+def test_embed_sidecar_respects_managed_false(tmp_path):
+    sidecar = tmp_path / "embed.yaml"
+    sidecar.write_text("frame_ancestors:\n  - https://webmail.test.example\n")
+    config = {"kanidm": {"domain": "idm.test.example"}, "embed": {"managed": False}}
+    apply_engine_embed_sidecar(config, sidecar)
+    assert embed_frame_ancestors(config) == []
 
 
 def test_render_template_requires_placeholders():

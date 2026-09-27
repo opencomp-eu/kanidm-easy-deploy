@@ -22,3 +22,13 @@ Each kit uses a distinct Compose project name (`kanidm-easy-deploy`, `easydeploy
 Standalone mode (`mode: standalone`, default) keeps the local `kanidm_caddy` container.
 
 See [easydeploy-engine/docs/integrated-vps.md](../easydeploy-engine/docs/integrated-vps.md).
+
+## Framing the login page from Bulwark
+
+Element inside webmail sends the iframe to this portal for OAuth. Kanidm's own policy is `frame-ancestors 'none'` plus `Cross-Origin-Resource-Policy: same-origin`, which blocks that. When the engine writes `.kanidm-easy-deploy/integration/embed.yaml`, apply rewrites those headers so only the listed parents (the webmail origin) can frame the portal. Set `embed.managed: false` to keep Kanidm unframeable. Standalone, put the parent in `deploy.yaml`:
+
+```yaml
+embed:
+  frame_ancestors:
+    - https://webmail.example.com
+```
