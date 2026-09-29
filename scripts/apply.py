@@ -1244,14 +1244,18 @@ def cli_ok(result: subprocess.CompletedProcess[str], *ok_fragments: str) -> bool
 
 
 def cli_exists(result: subprocess.CompletedProcess[str]) -> bool:
-    """True when a get/list command found an existing Kanidm entry."""
+    """True when a get/list command found an existing Kanidm entry.
+
+    Kanidm 1.11 prints ``No matching group 'name'`` and exits 0 when a group
+    is absent. That is not an error line, so it must be detected on its own.
+    """
     combined = cli_output(result).lower()
     if any(
         fragment in combined
         for fragment in (
             "nomatchingentries",
             "item not found",
-            "no matching entries",
+            "no matching",
         )
     ):
         return False

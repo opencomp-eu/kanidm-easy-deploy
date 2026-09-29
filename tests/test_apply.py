@@ -276,6 +276,16 @@ def test_cli_exists_treats_nomatchingentries_as_missing():
     assert not cli_ok(result)
 
 
+def test_cli_exists_treats_missing_group_message_as_absent():
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="No matching group 'opencloud-admin'\n",
+        stderr="",
+    )
+    assert not cli_exists(result)
+
+
 def test_cli_exists_accepts_existing_entry():
     result = subprocess.CompletedProcess(
         args=[],
