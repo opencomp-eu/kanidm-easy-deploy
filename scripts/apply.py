@@ -1983,6 +1983,23 @@ def kanidm_healthcheck_ok() -> bool:
     return result.returncode == 0
 
 
+REINDEX_MARKER_NAME = ".easydeploy-reindexed"
+
+
+def database_reindex_needed(logs: str, *, marker_exists: bool, kanidm_tag: str) -> bool:
+    """Kanidm 1.11.0 and 1.11.1 can pass healthchecks with a missing credential index.
+
+    The first sign-in then fails with Error Code: Backend. Reindex once per data
+    directory. Later applies skip it, including when the old warning is still in
+    the container log.
+    """
+    if marker_exists:
+        return False
+    if "YOU MUST REINDEX YOUR DATABASE" in logs:
+        return True
+    return kanidm_tag.startswith("1.11.")
+
+
 def reindex_database_offline(config: dict) -> None:
     """Offline reindex — fixes some 1.11.x fresh-install index issues."""
     data_dir = str(config["kanidm"]["data_dir"])
@@ -2007,6 +2024,21 @@ def reindex_database_offline(config: dict) -> None:
     )
 
 
+def mark_database_reindexed(config: dict) -> None:
+    marker = Path(config["kanidm"]["data_dir"]) / REINDEX_MARKER_NAME
+    marker.write_text("reindexed\n", encoding="utf-8")
+
+
+def kanidm_container_logs() -> str:
+    result = subprocess.run(
+        ["docker", "logs", "kanidm"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return f"{result.stdout or ''}\n{result.stderr or ''}"
+
+
 def wait_for_kanidm_ready(timeout_sec: int = 300) -> None:
     """Wait until the server responds to health checks (Docker or kanidmd healthcheck)."""
     deadline = time.time() + timeout_sec
@@ -2023,6 +2055,13 @@ def wait_for_kanidm_ready(timeout_sec: int = 300) -> None:
     )
 
 
+def reindex_and_restart(config: dict) -> None:
+    reindex_database_offline(config)
+    mark_database_reindexed(config)
+    run_compose("up", "-d", "--remove-orphans")
+    wait_for_kanidm_ready()
+
+
 def start_kanidm_stack() -> None:
     run_compose("up", "-d", "--remove-orphans")
     config = load_config()
@@ -2030,9 +2069,17 @@ def start_kanidm_stack() -> None:
         wait_for_kanidm_ready()
     except RuntimeError:
         print("Kanidm healthcheck failed; trying offline database reindex (common on 1.11.x fresh installs)…")
-        reindex_database_offline(config)
-        run_compose("up", "-d", "--remove-orphans")
-        wait_for_kanidm_ready()
+        reindex_and_restart(config)
+        return
+    tag = str(config["kanidm"].get("tag") or DEFAULT_KANIDM_TAG)
+    marker = Path(config["kanidm"]["data_dir"]) / REINDEX_MARKER_NAME
+    if database_reindex_needed(
+        kanidm_container_logs(),
+        marker_exists=marker.is_file(),
+        kanidm_tag=tag,
+    ):
+        print("Kanidm database indexes are incomplete. Reindexing before sign-in…")
+        reindex_and_restart(config)
 
 
 def write_stalwart_identity_secrets(secrets: dict) -> None:

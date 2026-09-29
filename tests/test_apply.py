@@ -21,6 +21,7 @@ from scripts.apply import (
     build_client_toml,
     build_server_toml,
     cli_exists,
+    database_reindex_needed,
     cli_json_field,
     default_display_name,
     discover_favicon_urls,
@@ -284,6 +285,24 @@ def test_cli_exists_treats_missing_group_message_as_absent():
         stderr="",
     )
     assert not cli_exists(result)
+
+
+def test_database_reindex_needed_once_for_kanidm_1_11():
+    assert database_reindex_needed("", marker_exists=False, kanidm_tag="1.11.1") is True
+    assert (
+        database_reindex_needed(
+            "WARNING: index PrimaryCredential Equality was not found. YOU MUST REINDEX YOUR DATABASE",
+            marker_exists=False,
+            kanidm_tag="1.8.5",
+        )
+        is True
+    )
+    assert database_reindex_needed(
+        "YOU MUST REINDEX YOUR DATABASE",
+        marker_exists=True,
+        kanidm_tag="1.11.1",
+    ) is False
+    assert database_reindex_needed("", marker_exists=False, kanidm_tag="1.12.0") is False
 
 
 def test_cli_exists_accepts_existing_entry():
