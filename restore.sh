@@ -62,6 +62,12 @@ require_command() {
 	command -v "$cmd" &>/dev/null || die "Required command not found: ${cmd}"
 }
 
+load_plan_json() {
+	PLAN_JSON="$(mktemp)"
+	easydeploy_backup_py "${EASYDEPLOY_LIB}/python/backup_plan.py" \
+		--project-root "${SCRIPT_DIR}" --emit-plan-json >"${PLAN_JSON}"
+}
+
 load_backup_settings() {
 	[[ -f "${SCRIPT_DIR}/deploy.yaml" ]] || die "Missing ${SCRIPT_DIR}/deploy.yaml — copy deploy.yaml.example and run bash apply.sh first."
 	eval "$(easydeploy_backup_settings_shell "${SCRIPT_DIR}/deploy.yaml")"
@@ -138,9 +144,7 @@ extract_payload() {
 		)
 	fi
 
-	local payload_root="${RESTORE_STAGE}/payload"
-	[[ -d "${payload_root}" ]] || die "Backup does not contain the expected payload/ directory."
-	printf '%s\n' "${payload_root}"
+	[[ -d "${RESTORE_STAGE}/payload" ]] || die "Backup does not contain the expected payload/ directory."
 }
 
 cleanup_and_restart() {
@@ -250,11 +254,10 @@ main() {
 
 	stop_stack
 
-	local payload_root
-	payload_root="$(extract_payload)"
+	extract_payload
 
 	info "Restoring Kanidm payload..."
-	easydeploy_backup_restore_payload "${SCRIPT_DIR}" "${payload_root}" "${PLAN_JSON}"
+	easydeploy_backup_restore_payload "${SCRIPT_DIR}" "${RESTORE_STAGE}/payload" "${PLAN_JSON}"
 
 	success "Restore completed successfully."
 }
