@@ -81,7 +81,7 @@ ADMIN_UI_CLIENT_ID = "kanidm_admin_ui"
 ADMIN_UI_SERVICE_ACCOUNT = "admin_ui_svc"
 ADMIN_UI_DEFAULT_ADMIN_GROUP = "idm_admins"
 ADMIN_UI_DEFAULT_IMAGE = "ghcr.io/opencomp-eu/kanidm-admin-ui"
-ADMIN_UI_DEFAULT_TAG = "v0.1.1"
+ADMIN_UI_DEFAULT_TAG = "v0.2.0"
 ADMIN_UI_SCOPES = ["openid", "profile", "email"]
 
 

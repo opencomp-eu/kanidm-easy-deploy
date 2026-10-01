@@ -1006,7 +1006,7 @@ def test_write_compose_env_emits_admin_ui_vars(tmp_path, monkeypatch):
 
     write_compose_env(_base_config(), secrets)
     env = env_path.read_text()
-    assert "ADMIN_UI_IMAGE=ghcr.io/opencomp-eu/kanidm-admin-ui:v0.1.1" in env
+    assert "ADMIN_UI_IMAGE=ghcr.io/opencomp-eu/kanidm-admin-ui:v0.2.0" in env
     assert "ADMIN_UI_KANIDM_URL=https://kanidm:8443" in env
     assert "ADMIN_UI_KANIDM_PUBLIC_URL=https://idm.test.example" in env
     assert "ADMIN_UI_EXTERNAL_URL=https://admin.test.example" in env

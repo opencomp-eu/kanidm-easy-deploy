@@ -80,7 +80,7 @@ The kit ships [Kanidm Admin UI](https://github.com/opencomp-eu/kanidm-admin-ui) 
 
   Re-apply afterwards: the `kanidm_admin_ui` OAuth2 client and the container are removed, and the Caddy site block disappears. Set `admin_ui.domain` to serve it on a different host.
 
-The kit wires the Admin UI for Kanidm's self-signed TLS (`KANIDM_TLS_CA_FILE`), the per-client OIDC issuer, and public reset links (`KANIDM_PUBLIC_URL`); the pinned `admin_ui.tag` tracks a known-good kanidm-admin-ui release (0.1.1+, which implements that contract).
+The kit wires the Admin UI for Kanidm's self-signed TLS (`KANIDM_TLS_CA_FILE`), the per-client OIDC issuer, and public reset links (`KANIDM_PUBLIC_URL`); the pinned `admin_ui.tag` tracks a known-good kanidm-admin-ui release (0.2.0+, which implements that contract).
 
 ### Protocols
 

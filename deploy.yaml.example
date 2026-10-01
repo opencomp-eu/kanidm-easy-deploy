@@ -63,7 +63,7 @@ admin_ui:
   enabled: true
   # domain: admin.example.com          # override the admin.<org domain> default
   # image: ghcr.io/opencomp-eu/kanidm-admin-ui
-  # tag: v0.1.1
+  # tag: v0.2.0
   # admin_group: idm_admins            # group whose members may log in
 # Optional Borg backups (local directory or SFTP off-site repository).
 # Kanidm's embedded database is file-based: prefer 'bash backup.sh --cold'
