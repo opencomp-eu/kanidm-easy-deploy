@@ -99,14 +99,6 @@ resolve_archive_name() {
 	easydeploy_backup_resolve_archive "${BACKUP_REPO_URL}" "${requested}"
 }
 
-resolve_latest_archive() {
-	local entries latest
-	entries="$(easydeploy_backup_list_archives "${BACKUP_REPO_URL}")"
-	latest="$(printf '%s\n' "${entries}" | sed '/^[[:space:]]*$/d' | tail -n 1)"
-	[[ -n "${latest}" ]] || die "No archives found in ${BACKUP_REPO_URL}."
-	printf '%s\n' "${latest}"
-}
-
 stack_running() {
 	docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^kanidm'
 }
@@ -239,7 +231,8 @@ main() {
 		load_backup_settings
 		easydeploy_backup_repo_env "${SECRETS_FILE}"
 		if [[ "${LATEST}" == "true" ]]; then
-			ARCHIVE_NAME="$(resolve_latest_archive)"
+			ARCHIVE_NAME="$(borg list --short --last 1 "${BACKUP_REPO_URL}")"
+			[[ -n "${ARCHIVE_NAME}" ]] || die "No archives found in ${BACKUP_REPO_URL}."
 		else
 			ARCHIVE_NAME="$(resolve_archive_name "${ARCHIVE_NAME}")"
 		fi
