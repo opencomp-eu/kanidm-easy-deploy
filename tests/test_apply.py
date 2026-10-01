@@ -348,6 +348,10 @@ def test_ensure_ldap_token_creates_missing_account_before_generate(monkeypatch, 
             )
         if "service-account" in args and "create" in args:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if "api-token" in args and "status" in args:
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="No api tokens exist\n", stderr=""
+            )
         if "api-token" in args and "generate" in args:
             return subprocess.CompletedProcess(
                 args=args,
@@ -368,6 +372,104 @@ def test_ensure_ldap_token_creates_missing_account_before_generate(monkeypatch, 
     assert generate[:3] == ("-o", "json", "service-account") or generate[0:2] == ("-o", "json")
     assert "stalwart-ldap" in generate
     assert yaml.safe_load(secrets_path.read_text())["LDAP_TOKEN"] == "generated-ldap-token"
+
+
+TOKEN_STATUS_OUTPUT = """token: account_id: 00000000-0000-0000-0000-00000000000a
+token_id: 11111111-1111-1111-1111-111111111111
+label: stalwart
+issued at: 2026-09-01 10:00:00.0 +00:00:00
+token expiry: never
+
+token: account_id: 00000000-0000-0000-0000-00000000000a
+token_id: 22222222-2222-2222-2222-222222222222
+label: something-else
+issued at: 2026-09-02 10:00:00.0 +00:00:00
+token expiry: never
+
+token: account_id: 00000000-0000-0000-0000-00000000000a
+token_id: 33333333-3333-3333-3333-333333333333
+label: stalwart
+issued at: 2026-09-03 10:00:00.0 +00:00:00
+token expiry: never
+
+"""
+
+
+def test_list_api_token_ids_parses_kanidm_status_by_label(monkeypatch):
+    from scripts import apply as apply_module
+
+    monkeypatch.setattr(
+        apply_module,
+        "kanidm_cli",
+        lambda *args: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=TOKEN_STATUS_OUTPUT, stderr=""
+        ),
+    )
+    assert apply_module.list_api_token_ids("stalwart-ldap", "stalwart") == [
+        "11111111-1111-1111-1111-111111111111",
+        "33333333-3333-3333-3333-333333333333",
+    ]
+
+
+def test_ensure_ldap_token_replaces_old_tokens_after_minting(monkeypatch, tmp_path):
+    from scripts import apply as apply_module
+
+    secrets_path = tmp_path / "secrets.yaml"
+    monkeypatch.setattr(apply_module, "SECRETS_PATH", secrets_path)
+    calls: list[tuple[str, ...]] = []
+
+    def fake_cli(*args: str):
+        calls.append(args)
+        if "get" in args:
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="name: stalwart-ldap\n", stderr=""
+            )
+        if "status" in args:
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=TOKEN_STATUS_OUTPUT, stderr=""
+            )
+        if "generate" in args:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"status":"Success","result":"new.ldap.token"}\n',
+                stderr="",
+            )
+        if "destroy" in args:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Success\n", stderr="")
+        raise AssertionError(f"unexpected kanidm_cli call: {' '.join(args)}")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    secrets = {"LDAP_TOKEN": "seeded-random-placeholder"}
+    ensure_ldap_token(secrets)
+
+    assert secrets["LDAP_TOKEN"] == "new.ldap.token"
+    destroyed = [call[4] for call in calls if "destroy" in call]
+    assert destroyed == [
+        "11111111-1111-1111-1111-111111111111",
+        "33333333-3333-3333-3333-333333333333",
+    ]
+    generate_index = next(i for i, call in enumerate(calls) if "generate" in call)
+    first_destroy = next(i for i, call in enumerate(calls) if "destroy" in call)
+    assert generate_index < first_destroy
+
+
+def test_ensure_ldap_token_keeps_real_token_without_created_flag(monkeypatch, tmp_path):
+    from scripts import apply as apply_module
+
+    secrets_path = tmp_path / "secrets.yaml"
+    monkeypatch.setattr(apply_module, "SECRETS_PATH", secrets_path)
+
+    def fake_cli(*args: str):
+        raise AssertionError(f"unexpected kanidm_cli call: {' '.join(args)}")
+
+    monkeypatch.setattr(apply_module, "kanidm_cli", fake_cli)
+    secrets = {"LDAP_TOKEN": "eyJhbGciOiJFUzI1NiJ9.eyJ0aWQiOiJ4In0.c2lnbmF0dXJl"}
+    ensure_ldap_token(secrets)
+
+    assert secrets["LDAP_TOKEN"] == "eyJhbGciOiJFUzI1NiJ9.eyJ0aWQiOiJ4In0.c2lnbmF0dXJl"
+    assert secrets["LDAP_TOKEN_CREATED"] == "1"
+    assert yaml.safe_load(secrets_path.read_text())["LDAP_TOKEN_CREATED"] == "1"
 
 
 def test_ensure_ldap_mail_read_adds_service_account_to_mail_groups(monkeypatch):

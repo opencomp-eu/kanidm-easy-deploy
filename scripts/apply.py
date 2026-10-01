@@ -1596,8 +1596,53 @@ def parse_api_token(result: subprocess.CompletedProcess[str]) -> str:
     return secret
 
 
+def looks_like_api_token(value: str) -> bool:
+    """Kanidm API tokens are compact JWS (three dot-separated parts); the seeded placeholder is not."""
+    return value.count(".") == 2 and all(value.split("."))
+
+
+def list_api_token_ids(account: str, label: str) -> list[str]:
+    status = kanidm_cli(
+        "service-account", "api-token", "status", account, "--name", "idm_admin"
+    )
+    if not cli_ok(status):
+        return []
+    ids: list[str] = []
+    token_id = ""
+    for raw in (status.stdout or "").splitlines():
+        line = raw.strip()
+        if line.startswith("token: "):
+            line = line[len("token: "):]
+        if line.startswith("token_id:"):
+            token_id = line.split(":", 1)[1].strip()
+        elif line.startswith("label:") and token_id:
+            if line.split(":", 1)[1].strip() == label:
+                ids.append(token_id)
+            token_id = ""
+    return ids
+
+
+def destroy_api_tokens(account: str, token_ids: list[str]) -> None:
+    for token_id in token_ids:
+        result = kanidm_cli(
+            "service-account", "api-token", "destroy", account, token_id,
+            "--name", "idm_admin",
+        )
+        if not cli_ok(result):
+            print(
+                f"Warning: could not remove old API token {token_id} from {account}: "
+                f"{cli_output(result).strip()[:300]}",
+                file=sys.stderr,
+            )
+
+
 def ensure_ldap_token(secrets: dict) -> None:
-    if str(secrets.get("LDAP_TOKEN") or "").strip() and str(secrets.get("LDAP_TOKEN_CREATED") or ""):
+    current = str(secrets.get("LDAP_TOKEN") or "").strip()
+    if current and str(secrets.get("LDAP_TOKEN_CREATED") or ""):
+        return
+    if looks_like_api_token(current):
+        secrets["LDAP_TOKEN_CREATED"] = "1"
+        save_yaml(SECRETS_PATH, secrets)
         return
     existing = kanidm_cli(
         "service-account", "get", "stalwart-ldap", "--name", "idm_admin"
@@ -1625,6 +1670,7 @@ def ensure_ldap_token(secrets: dict) -> None:
                 "Created stalwart-ldap but it is still missing: "
                 f"{cli_output(existing).strip()[:800]}"
             )
+    stale_ids = list_api_token_ids("stalwart-ldap", "stalwart")
     token = kanidm_cli(
         "-o", "json",
         "service-account", "api-token", "generate",
@@ -1644,6 +1690,7 @@ def ensure_ldap_token(secrets: dict) -> None:
     secrets["LDAP_TOKEN"] = secret
     secrets["LDAP_TOKEN_CREATED"] = "1"
     save_yaml(SECRETS_PATH, secrets)
+    destroy_api_tokens("stalwart-ldap", stale_ids)
 
 
 def ensure_ldap_mail_read() -> None:
@@ -1702,6 +1749,7 @@ def ensure_admin_ui_service_account(secrets: dict) -> None:
             f"Could not add {ADMIN_UI_SERVICE_ACCOUNT} to {ADMIN_UI_DEFAULT_ADMIN_GROUP}: "
             f"{cli_output(membership).strip()[:500]}"
         )
+    stale_ids = list_api_token_ids(ADMIN_UI_SERVICE_ACCOUNT, "admin-ui")
     token = kanidm_cli(
         "-o",
         "json",
@@ -1727,6 +1775,7 @@ def ensure_admin_ui_service_account(secrets: dict) -> None:
         )
     secrets["ADMIN_UI_API_TOKEN"] = secret
     save_yaml(SECRETS_PATH, secrets)
+    destroy_api_tokens(ADMIN_UI_SERVICE_ACCOUNT, stale_ids)
 
 
 def ensure_admin_ui_admin_members(config: dict) -> None:
