@@ -53,3 +53,66 @@ body:has(main.form-signin) > footer.footer .text-muted {
   width: 8em;
   height: 8em;
 }
+
+main.container-lg:has(img.oauth2-img) > div:first-child h2 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+main.container-lg:has(img.oauth2-img) > hr {
+  opacity: 0.25;
+  margin-bottom: 1.5rem;
+}
+
+main.container-lg:has(img.oauth2-img) .row {
+  --bs-gutter-x: 0;
+  --bs-gutter-y: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+
+main.container-lg:has(img.oauth2-img) .row > [class*="col"] {
+  width: auto;
+  max-width: none;
+  padding: 0;
+}
+
+main.container-lg:has(img.oauth2-img) .card {
+  height: 100%;
+  border: 1px solid color-mix(in srgb, var(--bs-border-color) 70%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--bs-tertiary-bg) 55%, var(--bs-body-bg));
+  box-shadow: none;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+main.container-lg:has(img.oauth2-img) .card:hover {
+  border-color: var(--bs-primary);
+  transform: translateY(-2px);
+}
+
+main.container-lg:has(img.oauth2-img) .card > a {
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 1.35rem 1rem 0 !important;
+}
+
+main.container-lg:has(img.oauth2-img) .oauth2-img {
+  width: 4.25rem;
+  height: 4.25rem;
+  max-width: 4.25rem;
+  max-height: 4.25rem;
+  padding: 0;
+  object-fit: contain;
+}
+
+main.container-lg:has(img.oauth2-img) .card label {
+  display: block;
+  margin: 0.9rem 0.75rem 1.15rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+}

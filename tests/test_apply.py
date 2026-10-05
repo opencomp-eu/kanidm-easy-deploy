@@ -860,6 +860,39 @@ def test_resolve_oauth2_client_image_honours_explicit_path(tmp_path: Path, monke
     assert resolved == icon.resolve()
 
 
+def test_resolve_image_source_extracts_png_from_ico(tmp_path: Path, monkeypatch):
+    from scripts import apply as apply_module
+
+    branding_dir = tmp_path / "branding"
+    branding_dir.mkdir()
+    monkeypatch.setattr(apply_module, "BRANDING_DIR", branding_dir)
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    def fake_download(url: str, dest: Path, *, max_bytes: int = 0) -> None:
+        dest.write_bytes(b"\x00\x00\x01\x00" + png)
+
+    monkeypatch.setattr(apply_module, "_download_url", fake_download)
+    resolved = resolve_image_source("https://cloud.example.com/favicon.ico", cache_name="opencloud-ico")
+    assert resolved.suffix == ".png"
+    assert resolved.read_bytes().startswith(b"\x89PNG")
+
+
+def test_resolve_oauth2_client_image_uses_bundled_when_favicon_missing(monkeypatch):
+    from scripts import apply as apply_module
+
+    monkeypatch.setattr(apply_module, "fetch_landing_favicon", lambda *args, **kwargs: None)
+    config = _base_config()
+    client = {"client_id": "opencloud", "landing_url": "https://cloud.example.com"}
+    resolved = resolve_oauth2_client_image(config, client)
+    assert resolved == apply_module.BUNDLED_OAUTH2_ICONS["opencloud"]
+    assert resolved.is_file()
+
+
 def test_resolve_oauth2_client_image_skips_when_disabled(tmp_path: Path, monkeypatch):
     from scripts import apply as apply_module
 

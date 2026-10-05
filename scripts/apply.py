@@ -44,6 +44,14 @@ EMBED_SIDECAR = INTEGRATION_DIR / "embed.yaml"
 DEFAULT_INTEGRATE_NETWORK = "easydeploy-net"
 DEFAULT_KANIDM_TAG = "1.11.1"
 DEFAULT_LOGO_PATH = PROJECT_ROOT / "assets" / "branding" / "default-logo.svg"
+APP_ICONS_DIR = PROJECT_ROOT / "assets" / "branding" / "apps"
+# Used when a client's landing page has no Kanidm-compatible favicon.
+BUNDLED_OAUTH2_ICONS = {
+    "kanidm_admin_ui": DEFAULT_LOGO_PATH,
+    "matrix": APP_ICONS_DIR / "matrix.svg",
+    "opencloud": APP_ICONS_DIR / "opencloud.svg",
+    "stalwart-webui": APP_ICONS_DIR / "webmail.svg",
+}
 BRANDING_DIR = STATE_DIR / "branding"
 MAX_BRANDING_IMAGE_BYTES = 256 * 1024
 SUPPORTED_BRANDING_IMAGE_TYPES = frozenset({"png", "jpg", "jpeg", "gif", "svg", "webp"})
@@ -298,6 +306,19 @@ def _download_url(url: str, dest: Path, *, max_bytes: int = MAX_BRANDING_IMAGE_B
     dest.write_bytes(data)
 
 
+def _png_embedded_in_ico(content: bytes) -> bytes | None:
+    """Return a PNG payload stored inside an ICO, which Kanidm can accept."""
+    signature = b"\x89PNG\r\n\x1a\n"
+    start = content.find(signature)
+    if start < 0:
+        return None
+    png = content[start:]
+    end = png.find(b"IEND")
+    if end < 0:
+        return None
+    return png[: end + 8]
+
+
 def _guess_extension(url: str, content: bytes) -> str:
     path = urllib.parse.urlparse(url).path.lower()
     for ext in ("svg", "png", "jpg", "jpeg", "gif", "webp", "ico"):
@@ -325,10 +346,20 @@ def resolve_image_source(source: str, *, cache_name: str) -> Path:
         _download_url(value, temp)
         content = temp.read_bytes()
         ext = _guess_extension(value, content)
-        # Kanidm does not accept ICO; skip and let the caller try the next URL.
+        # Kanidm does not accept ICO. Many favicon.ico files embed a PNG.
         if ext == "ico":
-            raise ValueError(f"ICO favicons are not supported by Kanidm: {value}")
+            png = _png_embedded_in_ico(content)
+            temp.unlink(missing_ok=True)
+            if png is None:
+                raise ValueError(f"ICO favicons are not supported by Kanidm: {value}")
+            content = png
+            ext = "png"
+            dest = cache_base.with_suffix(".png")
+            dest.write_bytes(content)
+            validate_image_file(dest)
+            return dest
         if ext not in SUPPORTED_BRANDING_IMAGE_TYPES:
+            temp.unlink(missing_ok=True)
             raise ValueError(f"Unsupported downloaded image type from {value!r}")
         dest = cache_base.with_suffix(f".{ext}")
         temp.replace(dest)
@@ -436,9 +467,16 @@ def resolve_oauth2_client_image(config: dict, client: dict) -> Path | None:
         redirects = client.get("redirect_uris") or []
         if redirects:
             landing = str(redirects[0]).strip()
-    if not landing:
-        return None
-    return fetch_landing_favicon(landing, cache_name=f"oauth2-{client_id}")
+    fetched = None
+    if landing and oauth2_icons_enabled(config):
+        fetched = fetch_landing_favicon(landing, cache_name=f"oauth2-{client_id}")
+    if fetched:
+        return fetched
+    if oauth2_icons_enabled(config):
+        bundled = BUNDLED_OAUTH2_ICONS.get(client_id)
+        if bundled and bundled.is_file():
+            return bundled
+    return None
 
 
 def set_kanidm_domain_image(image_path: Path) -> None:
@@ -532,9 +570,17 @@ def apply_oauth2_client_image(config: dict, client: dict) -> None:
         )
         return
     if not image_path:
+        print(
+            f"Warning: no icon for OAuth2 client {client_id!r}; "
+            "the Applications page will keep Kanidm's default image.",
+            file=sys.stderr,
+        )
         return
     set_kanidm_oauth2_image(client_id, image_path)
-    print(f"  OAuth2 icon set: {client_id}")
+    if image_path in BUNDLED_OAUTH2_ICONS.values():
+        print(f"  OAuth2 icon set: {client_id} (bundled; favicon unavailable)")
+    else:
+        print(f"  OAuth2 icon set: {client_id}")
 
 
 def load_engine_oidc_clients() -> list[Any]:
