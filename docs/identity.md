@@ -61,6 +61,6 @@ The wizard creates these groups so role mapping is consistent:
 
 - `opencloud-admin`, `opencloud-user`, `opencloud-guest`
 - `matrix-admins`
-- `mail-users`
+- `mail-users` — the mail cutover switch. Stalwart creates a mailbox for members and webmail sign-in is limited to this group. Leave someone out of it while their mailbox is still at Microsoft.
 
 Add further people to these groups in Kanidm.

@@ -86,7 +86,11 @@ def main() -> None:
         "--group",
         action="append",
         default=list(DEFAULT_USER_GROUPS),
-        help="group membership; repeat as needed (defaults: opencloud-user, mail-users)",
+        help=(
+            "group membership; repeat as needed (defaults: opencloud-user, mail-users). "
+            "During a Microsoft move, pass only --group opencloud-user until that person's mail moves. "
+            "mail-users is what creates their mailbox."
+        ),
     )
     create.set_defaults(func=create_user)
 

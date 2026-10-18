@@ -1906,15 +1906,21 @@ def apply_oauth2_clients(config: dict, secrets: dict) -> None:
                     f"{(result.stderr or result.stdout or '').strip()[:500]}"
                 )
         scopes = [str(item) for item in (client.get("scopes") or DEFAULT_OIDC_SCOPES) if str(item).strip()]
+        scope_group = str(client.get("scope_group") or "idm_all_persons").strip() or "idm_all_persons"
         if scopes:
             result = kanidm_cli(
                 "system", "oauth2", "update-scope-map", client_id,
-                "idm_all_persons", *scopes, "--name", "idm_admin",
+                scope_group, *scopes, "--name", "idm_admin",
             )
             if not cli_ok(result):
                 raise RuntimeError(
                     f"Could not configure scopes for OAuth2 client {client_id!r}: "
                     f"{(result.stderr or result.stdout or '').strip()[:500]}"
+                )
+            if scope_group != "idm_all_persons":
+                kanidm_cli(
+                    "system", "oauth2", "delete-scope-map", client_id,
+                    "idm_all_persons", "--name", "idm_admin",
                 )
         if to_bool(client.get("prefer_short_username", True)):
             kanidm_cli(
