@@ -11,6 +11,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DEPLOY_PATH = PROJECT_ROOT / "deploy.yaml"
+EXAMPLE_DISPLAY_NAME = "Example Organisation"
 
 DEFAULT_GROUPS = [
     "opencloud-admin",
@@ -70,6 +71,12 @@ def update_from_wizard(
         "mode": proxy_mode,
         "integrate": {"network": "easydeploy-net"},
     }
+
+    # Drop the sample name from deploy.yaml.example so apply derives the
+    # portal name from the domain (idm.acme.com -> "Acme").
+    branding = config.get("branding")
+    if isinstance(branding, dict) and branding.get("display_name") == EXAMPLE_DISPLAY_NAME:
+        branding.pop("display_name")
 
     user_entry: dict[str, Any] = {
         "username": admin_username,
