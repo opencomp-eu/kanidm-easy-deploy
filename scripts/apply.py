@@ -665,10 +665,36 @@ def oidc_clients(config: dict) -> list[Any]:
     return merged
 
 
+def _client_group_list(config: dict, key: str) -> list[str]:
+    """Group names OAuth2 clients declare under ``key`` (groups / operator_groups)."""
+    names: list[str] = []
+    for client in oidc_clients(config):
+        if not isinstance(client, dict):
+            continue
+        raw = client.get(key) or []
+        if not isinstance(raw, list):
+            continue
+        for name in raw:
+            group = str(name or "").strip()
+            if group and group not in names:
+                names.append(group)
+    return names
+
+
+def client_groups(config: dict) -> list[str]:
+    """Groups an app needs to exist, e.g. for its claim map (Nextcloud admins)."""
+    return _client_group_list(config, "groups")
+
+
+def operator_groups(config: dict) -> list[str]:
+    """Groups the first configured user (the operator) joins, declared by app clients."""
+    return _client_group_list(config, "operator_groups")
+
+
 def configured_groups(config: dict) -> list[str]:
     groups: list[str] = []
     seen: set[str] = set()
-    for name in list(config.get("groups") or []) + list(DEFAULT_GROUPS):
+    for name in list(config.get("groups") or []) + list(DEFAULT_GROUPS) + client_groups(config):
         group = str(name or "").strip()
         if group and group not in seen:
             seen.add(group)
@@ -681,7 +707,19 @@ def configured_groups(config: dict) -> list[str]:
             if group and group not in seen:
                 seen.add(group)
                 groups.append(group)
+    for group in operator_groups(config):
+        if group not in seen:
+            seen.add(group)
+            groups.append(group)
     return groups
+
+
+def user_groups(config: dict, user: dict, *, is_operator: bool) -> list[str]:
+    """A user's groups from deploy.yaml, plus client operator_groups for the operator."""
+    names = [str(name or "").strip() for name in user.get("groups") or []]
+    if is_operator:
+        names.extend(operator_groups(config))
+    return list(dict.fromkeys(name for name in names if name))
 
 
 def compose_file_paths(config: dict) -> list[Path]:
@@ -1541,12 +1579,15 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
 
     enrollment_links: dict[str, str] = {}
     credentialed: set[str] = set()
+    operator_seen = False
     for user in config.get("users") or []:
         if not isinstance(user, dict):
             continue
         username = str(user.get("username") or "").strip()
         if not username:
             continue
+        is_operator = not operator_seen
+        operator_seen = True
         display = str(user.get("display_name") or username)
         email = person_mail_address(
             username,
@@ -1576,10 +1617,7 @@ def bootstrap_identity(config: dict, secrets: dict) -> None:
                 "--name", "idm_admin",
             )
         kanidm_cli("person", "posix", "set", username, "--name", "idm_admin")
-        for group in user.get("groups") or []:
-            name = str(group or "").strip()
-            if not name:
-                continue
+        for name in user_groups(config, user, is_operator=is_operator):
             added = kanidm_cli(
                 "group", "add-members", name, username,
                 "--name", "idm_admin",

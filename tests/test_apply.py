@@ -196,6 +196,39 @@ def test_configured_groups_includes_defaults_and_user_groups():
     assert "opencloud-user" in groups
 
 
+def _nextcloud_sidecar(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    clients_dir = tmp_path / "oidc-clients.d"
+    clients_dir.mkdir()
+    (clients_dir / "nextcloud.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "client_id": "nextcloud",
+                "landing_url": "https://cloud.test/",
+                "groups": ["nextcloud-admins"],
+                "operator_groups": ["nextcloud-admins"],
+            }
+        )
+    )
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+
+
+def test_client_sidecar_groups_are_created(tmp_path, monkeypatch):
+    _nextcloud_sidecar(tmp_path, monkeypatch)
+    assert "nextcloud-admins" in configured_groups(_base_config())
+
+
+def test_operator_joins_client_operator_groups(tmp_path, monkeypatch):
+    from scripts.apply import user_groups
+
+    _nextcloud_sidecar(tmp_path, monkeypatch)
+    config = _base_config()
+    operator = config["users"][0]
+    assert user_groups(config, operator, is_operator=True) == ["opencloud-admin", "nextcloud-admins"]
+    assert user_groups(config, operator, is_operator=False) == ["opencloud-admin"]
+
+
 def test_caddy_block_proxies_https_to_kanidm():
     block = kanidm_portal_caddy_block("idm.test.example")
     assert "idm.test.example" in block
