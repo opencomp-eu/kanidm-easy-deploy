@@ -118,6 +118,7 @@ bash update.sh             # git pull + images; prints "Nothing to update" if un
 bash update.sh --force     # ignore update.lock and always apply
 bash kanidm-cli.sh login --name idm_admin   # CLI admin (after apply)
 bash user.sh create alice "Alice Example" --email alice@example.com
+# mail-users (a default group) creates the Stalwart mailbox before the enrollment link is used
 bash user.sh reset alice   # issue a new one-time credential reset link
 bash start.sh              # compose up (via apply, skip pull)
 bash stop.sh               # compose down

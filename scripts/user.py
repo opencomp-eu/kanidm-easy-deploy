@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from scripts.apply import (
     create_enrollment_link,
@@ -15,6 +18,8 @@ from scripts.apply import (
 )
 
 DEFAULT_USER_GROUPS = ("opencloud-user", "mail-users")
+MAIL_USERS_GROUP = "mail-users"
+KIT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def require_ok(result, action: str, *, allow_existing: bool = False) -> None:
@@ -33,6 +38,45 @@ def authenticate() -> tuple[dict, dict]:
     if not ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"]):
         raise RuntimeError("could not authenticate as idm_admin")
     return config, secrets
+
+
+def wants_mailbox(groups: list[str]) -> bool:
+    """mail-users is what makes Stalwart create a mailbox."""
+    return any(group.strip().casefold() == MAIL_USERS_GROUP for group in groups)
+
+
+def stalwart_kit_root(start: Path = KIT_ROOT) -> Path | None:
+    """Sibling stalwart-easy-deploy, when this host also runs mail."""
+    root = start.parent / "stalwart-easy-deploy"
+    if (root / "deploy.yaml").is_file() and (root / "scripts" / "groupware.py").is_file():
+        return root
+    return None
+
+
+def mailbox_sync_command(root: Path) -> list[str]:
+    """Run Stalwart's sync and wait if one is already in progress.
+
+    A sync that started before this person existed would otherwise finish
+    without their mailbox, and Nextcloud Mail would have nothing to sign in to.
+    """
+    python = root / ".venv" / "bin" / "python"
+    if python.is_file():
+        return [str(python), "-m", "scripts.groupware", "--wait"]
+    uv = shutil.which("uv") or "uv"
+    return [uv, "run", "--project", str(root), "python", "-m", "scripts.groupware", "--wait"]
+
+
+def sync_mailbox(root: Path | None = None, runner=subprocess.run) -> None:
+    kit = root if root is not None else stalwart_kit_root()
+    if kit is None:
+        return
+    print("Creating the Stalwart mailbox…")
+    result = runner(mailbox_sync_command(kit), cwd=kit, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Stalwart did not create the mailbox. Nextcloud Mail cannot connect until it exists. "
+            "Re-run this command, or run apply.sh in stalwart-easy-deploy."
+        )
 
 
 def create_user(args: argparse.Namespace) -> None:
@@ -57,7 +101,15 @@ def create_user(args: argparse.Namespace) -> None:
             kanidm_cli("group", "add-members", group, args.username),
             f"adding {args.username} to {group}",
         )
+    sync_error: RuntimeError | None = None
+    if wants_mailbox(args.group):
+        try:
+            sync_mailbox()
+        except RuntimeError as exc:
+            sync_error = exc
     print_enrollment_link(args.username, str(config["kanidm"]["domain"]))
+    if sync_error is not None:
+        raise sync_error
 
 
 def print_enrollment_link(username: str, domain: str) -> None:
