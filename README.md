@@ -120,6 +120,8 @@ bash kanidm-cli.sh login --name idm_admin   # CLI admin (after apply)
 bash user.sh create alice "Alice Example" --email alice@example.com
 # mail-users (a default group) creates the Stalwart mailbox before the enrollment link is used
 bash user.sh reset alice   # issue a new one-time credential reset link
+bash user.sh mail alice    # print the person's mail address(es)
+# From easydeploy-engine: bash app-password.sh alice  # Stalwart IMAP/SMTP app password
 bash start.sh              # compose up (via apply, skip pull)
 bash stop.sh               # compose down
 ```

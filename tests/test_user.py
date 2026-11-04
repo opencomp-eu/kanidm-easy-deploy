@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from scripts.user import mailbox_sync_command, stalwart_kit_root, sync_mailbox, wants_mailbox
+from scripts.user import (
+    mailbox_sync_command,
+    person_emails_from_get,
+    person_emails_from_list,
+    stalwart_kit_root,
+    sync_mailbox,
+    wants_mailbox,
+)
 
 
 def test_mailbox_sync_follows_mail_users_only():
@@ -55,3 +63,24 @@ def test_sync_mailbox_skips_when_stalwart_is_not_installed(tmp_path: Path, monke
     called = []
     sync_mailbox(runner=lambda *args, **kwargs: called.append(args))
     assert called == []
+
+
+def test_person_emails_from_list_matches_the_username():
+    payload = [
+        {
+            "attrs": {
+                "name": ["alice"],
+                "mail": ["alice@acme.test", "Alice@Acme.Test"],
+                "class": ["person", "account"],
+            }
+        },
+        {"attrs": {"name": ["bob"], "mail": ["bob@acme.test"], "class": ["person"]}},
+    ]
+    assert person_emails_from_list(payload, "alice") == ["alice@acme.test"]
+    assert person_emails_from_list(json.dumps(payload), "bob") == ["bob@acme.test"]
+    assert person_emails_from_list(payload, "carol") == []
+
+
+def test_person_emails_from_get_reads_mail_lines():
+    text = "name: alice\ndisplayname: Alice\nmail: alice@acme.test\nmail: alias@acme.test\n"
+    assert person_emails_from_get(text) == ["alice@acme.test", "alias@acme.test"]

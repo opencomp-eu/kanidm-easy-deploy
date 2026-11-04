@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from scripts.apply import (
     create_enrollment_link,
@@ -126,6 +128,90 @@ def reset_user(args: argparse.Namespace) -> None:
     print_enrollment_link(args.username, str(config["kanidm"]["domain"]))
 
 
+def _attr_values(entry: dict[str, Any], key: str) -> list[str]:
+    value = entry.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = [item for item in value if isinstance(item, str)]
+    else:
+        return []
+    return [item.strip() for item in items if item and item.strip()]
+
+
+def person_emails_from_list(payload: Any, username: str) -> list[str]:
+    """Pick mail addresses for username from `kanidm person list --output json`."""
+    if isinstance(payload, str):
+        text = payload.strip()
+        start = text.find("[")
+        if start < 0:
+            raise ValueError("Kanidm person list did not return a JSON array")
+        payload = json.loads(text[start:])
+    if isinstance(payload, dict):
+        payload = payload.get("entries") or payload.get("result") or []
+    if not isinstance(payload, list):
+        raise ValueError("Kanidm person list JSON must be an array")
+    wanted = username.strip().casefold()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        entry = item.get("attrs") if isinstance(item.get("attrs"), dict) else item
+        if not isinstance(entry, dict):
+            continue
+        names = {value.casefold() for value in _attr_values(entry, "name")}
+        if wanted not in names:
+            continue
+        return list(dict.fromkeys(email.casefold() for email in _attr_values(entry, "mail")))
+    return []
+
+
+def person_emails_from_get(text: str) -> list[str]:
+    """Parse `mail:` lines from `kanidm person get` text output."""
+    emails: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().casefold() != "mail":
+            continue
+        address = value.strip().casefold()
+        if address and address not in emails:
+            emails.append(address)
+    return emails
+
+
+def lookup_person_emails(username: str) -> list[str]:
+    listed = kanidm_cli("person", "list", "--name", "idm_admin", "--output", "json")
+    if listed.returncode == 0 and listed.stdout.strip():
+        emails = person_emails_from_list(listed.stdout, username)
+        if emails:
+            return emails
+    got = kanidm_cli("person", "get", username, "--name", "idm_admin")
+    output = f"{got.stdout}\n{got.stderr}"
+    if got.returncode != 0:
+        raise RuntimeError(f"Could not read Kanidm person {username!r}:\n{output.strip()}")
+    emails = person_emails_from_get(output)
+    if not emails:
+        raise RuntimeError(
+            f"Kanidm person {username!r} has no mail attribute. "
+            f"Set one with: bash user.sh create {username} \"Display Name\" --email {username}@example.com"
+        )
+    return emails
+
+
+def show_mail(args: argparse.Namespace) -> None:
+    authenticate()
+    emails = lookup_person_emails(args.username)
+    if args.json:
+        print(json.dumps({"username": args.username, "emails": emails}))
+        return
+    for email in emails:
+        print(email)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage EasyDeploy Kanidm people")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -149,6 +235,11 @@ def main() -> None:
     reset = subparsers.add_parser("reset", help="issue a new credential enrollment/reset link")
     reset.add_argument("username")
     reset.set_defaults(func=reset_user)
+
+    mail = subparsers.add_parser("mail", help="print the person's mail address(es)")
+    mail.add_argument("username")
+    mail.add_argument("--json", action="store_true", help="print JSON instead of one address per line")
+    mail.set_defaults(func=show_mail)
 
     args = parser.parse_args()
     try:
