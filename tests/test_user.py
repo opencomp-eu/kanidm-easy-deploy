@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.user import (
+    default_user_groups,
     mailbox_sync_command,
     person_emails_from_get,
     person_emails_from_list,
@@ -84,3 +85,12 @@ def test_person_emails_from_list_matches_the_username():
 def test_person_emails_from_get_reads_mail_lines():
     text = "name: alice\ndisplayname: Alice\nmail: alice@acme.test\nmail: alias@acme.test\n"
     assert person_emails_from_get(text) == ["alice@acme.test", "alias@acme.test"]
+
+
+def test_default_groups_are_only_ones_the_workspace_has(monkeypatch):
+    from scripts import user as user_module
+
+    monkeypatch.setattr(user_module, "configured_groups", lambda _config: ["nextcloud-admins", "mail-users"])
+    assert default_user_groups({}) == ["mail-users"]
+    monkeypatch.setattr(user_module, "configured_groups", lambda _config: ["opencloud-user", "mail-users"])
+    assert default_user_groups({}) == ["opencloud-user", "mail-users"]

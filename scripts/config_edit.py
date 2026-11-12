@@ -13,14 +13,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DEPLOY_PATH = PROJECT_ROOT / "deploy.yaml"
 EXAMPLE_DISPLAY_NAME = "Example Organisation"
 
-DEFAULT_GROUPS = [
-    "opencloud-admin",
-    "opencloud-user",
-    "opencloud-guest",
-    "matrix-admins",
-    "mail-users",
-]
-
 
 def load_or_init(path: Path = DEFAULT_DEPLOY_PATH) -> dict:
     if not path.exists():
@@ -82,7 +74,8 @@ def update_from_wizard(
         "username": admin_username,
         "display_name": admin_display_name,
         "email": admin_email,
-        "groups": ["opencloud-admin", "opencloud-user", "matrix-admins", "mail-users"],
+        # Apps add the operator to their groups (operator_groups on their OAuth2 client).
+        "groups": [],
     }
     if admin_password:
         user_entry["password"] = admin_password
@@ -91,7 +84,7 @@ def update_from_wizard(
     if admin_ui_enabled and admin_ui_domain:
         admin_ui["domain"] = str(admin_ui_domain).strip().rstrip("/")
     config["admin_ui"] = admin_ui
-    config["groups"] = list(DEFAULT_GROUPS)
+    config["groups"] = []
     config["oidc"] = {"enabled": True, "clients": list((config.get("oidc") or {}).get("clients") or [])}
 
     save(path, config)

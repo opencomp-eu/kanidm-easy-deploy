@@ -64,14 +64,6 @@ SECRET_KEYS = (
     "LDAP_TOKEN",
 )
 
-DEFAULT_GROUPS = (
-    "opencloud-admin",
-    "opencloud-user",
-    "opencloud-guest",
-    "matrix-admins",
-    "mail-users",
-)
-
 DEFAULT_OIDC_SCOPES = ["openid", "profile", "email", "groups", "groups_name"]
 DEFAULT_OPENCLOUD_CLAIM_MAPS = [
     {
@@ -694,7 +686,9 @@ def operator_groups(config: dict) -> list[str]:
 def configured_groups(config: dict) -> list[str]:
     groups: list[str] = []
     seen: set[str] = set()
-    for name in list(config.get("groups") or []) + list(DEFAULT_GROUPS) + client_groups(config):
+    # Apps declare the groups they need on their OAuth2 client (easydeploy-engine
+    # sidecars), so a workspace only gets groups for apps it runs.
+    for name in list(config.get("groups") or []) + client_groups(config):
         group = str(name or "").strip()
         if group and group not in seen:
             seen.add(group)

@@ -57,10 +57,10 @@ Anonymous bind is not supported. StartTLS is not supported.
 
 ## Groups
 
-The wizard creates these groups so role mapping is consistent:
+Each app declares the groups it needs on its OAuth2 client (`groups`, and `operator_groups` for the first person), so a workspace only has groups for the apps it runs:
 
-- `opencloud-admin`, `opencloud-user`, `opencloud-guest`
-- `matrix-admins`
-- `mail-users` — the mail cutover switch. Stalwart creates a mailbox for members and webmail sign-in is limited to this group. Leave someone out of it while their mailbox is still at Microsoft.
+- `nextcloud-admins` (Nextcloud) — mapped to Nextcloud's admin group. Every person can sign in to Nextcloud.
+- `mail-users` (Stalwart) — the mail cutover switch. Stalwart creates a mailbox for members and webmail sign-in is limited to this group. Leave someone out of it while their mailbox is still at Microsoft.
+- `opencloud-admin`, `opencloud-user`, `opencloud-guest` (OpenCloud) — role mapping for OpenCloud.
 
-Add further people to these groups in Kanidm.
+Extra groups can be listed under `groups:` in `deploy.yaml`. Add people to groups in Kanidm.

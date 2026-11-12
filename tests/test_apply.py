@@ -189,11 +189,14 @@ def test_oidc_clients_includes_engine_sidecars(tmp_path, monkeypatch):
     assert any(item.get("client_id") == "opencloud" for item in clients)
 
 
-def test_configured_groups_includes_defaults_and_user_groups():
-    groups = configured_groups(_base_config())
-    assert "opencloud-admin" in groups
-    assert "mail-users" in groups
-    assert "opencloud-user" in groups
+def test_configured_groups_are_only_the_ones_asked_for(tmp_path, monkeypatch):
+    from scripts import apply as apply_module
+
+    # No engine sidecars: only deploy.yaml groups and user groups exist.
+    monkeypatch.setattr(apply_module, "INTEGRATION_DIR", tmp_path)
+    groups = configured_groups(_base_config(groups=["mail-users"], users=[{"username": "ada", "groups": ["finance"]}]))
+    assert groups == ["mail-users", "finance"]
+    assert not {"opencloud-user", "opencloud-guest", "matrix-admins"} & set(groups)
 
 
 def _nextcloud_sidecar(tmp_path, monkeypatch):

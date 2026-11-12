@@ -34,19 +34,14 @@ users:
   - username: operator
     display_name: Admin
     email: admin@example.com
-    groups:
-      - opencloud-admin
-      - opencloud-user
-      - matrix-admins
-      - mail-users
+    # Apps on this VPS add the first person to the groups they need
+    # (for example nextcloud-admins and mail-users). List extra groups here.
+    groups: []
 
-# Groups created on apply so OpenCloud / Matrix / Stalwart role mapping works.
-groups:
-  - opencloud-admin
-  - opencloud-user
-  - opencloud-guest
-  - matrix-admins
-  - mail-users
+# Extra groups to create on apply. Apps wired by easydeploy-engine declare their
+# own groups (nextcloud-admins, mail-users, opencloud-*), so a workspace only
+# gets groups for the apps it runs.
+groups: []
 
 oidc:
   enabled: true

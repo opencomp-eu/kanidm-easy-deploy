@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.apply import (
+    configured_groups,
     create_enrollment_link,
     ensure_idm_admin_login,
     kanidm_cli,
@@ -19,6 +20,7 @@ from scripts.apply import (
     load_or_create_secrets,
 )
 
+# Groups a new person joins when --group is not given, if this workspace has them.
 DEFAULT_USER_GROUPS = ("opencloud-user", "mail-users")
 MAIL_USERS_GROUP = "mail-users"
 KIT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +42,12 @@ def authenticate() -> tuple[dict, dict]:
     if not ensure_idm_admin_login(secrets["IDM_ADMIN_PASSWORD"]):
         raise RuntimeError("could not authenticate as idm_admin")
     return config, secrets
+
+
+def default_user_groups(config: dict) -> list[str]:
+    """DEFAULT_USER_GROUPS that this workspace actually has (OpenCloud groups only exist with OpenCloud)."""
+    available = set(configured_groups(config))
+    return [group for group in DEFAULT_USER_GROUPS if group in available]
 
 
 def wants_mailbox(groups: list[str]) -> bool:
@@ -83,6 +91,7 @@ def sync_mailbox(root: Path | None = None, runner=subprocess.run) -> None:
 
 def create_user(args: argparse.Namespace) -> None:
     config, _ = authenticate()
+    groups = list(args.group) if args.group else default_user_groups(config)
     require_ok(
         kanidm_cli("person", "create", args.username, args.display_name),
         f"creating {args.username}",
@@ -98,13 +107,13 @@ def create_user(args: argparse.Namespace) -> None:
         f"enabling POSIX for {args.username}",
         allow_existing=True,
     )
-    for group in args.group:
+    for group in groups:
         require_ok(
             kanidm_cli("group", "add-members", group, args.username),
             f"adding {args.username} to {group}",
         )
     sync_error: RuntimeError | None = None
-    if wants_mailbox(args.group):
+    if wants_mailbox(groups):
         try:
             sync_mailbox()
         except RuntimeError as exc:
@@ -223,11 +232,12 @@ def main() -> None:
     create.add_argument(
         "--group",
         action="append",
-        default=list(DEFAULT_USER_GROUPS),
+        default=None,
         help=(
-            "group membership; repeat as needed (defaults: opencloud-user, mail-users). "
-            "During a Microsoft move, pass only --group opencloud-user until that person's mail moves. "
-            "mail-users is what creates their mailbox."
+            "group membership; repeat as needed. Replaces the defaults, which are whichever of "
+            "opencloud-user and mail-users this workspace has. "
+            "mail-users is what creates their mailbox, so during a Microsoft move leave it out "
+            "until that person's mail moves."
         ),
     )
     create.set_defaults(func=create_user)
